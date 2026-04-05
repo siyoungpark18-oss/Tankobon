@@ -6,7 +6,7 @@ It is local application that Free, Open Source, Cross-platform, made for persona
 *Its sole purpose of existence is to make manga piracy easier.*
 
 ## Download ##
-Get the tool from the releases page
+Get the tool from the [releases](https://github.com/siyoungpark18-oss/Tankobon/releases) page
 
 ## Why Use Tankobon? ##
 
