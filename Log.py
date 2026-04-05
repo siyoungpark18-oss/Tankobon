@@ -156,7 +156,7 @@ class LogRedirect(io.TextIOBase):
     def write(self, msg):
         msg = msg.rstrip('\n')
         if not msg.strip():
-            if self.app.config.get("log_blank_lines", True):
+            if self.app.config.get("log_blank_lines", False):
                 self.log.configure(state='normal')
                 hide_tag = self._active_section["hide_tag"] if self._active_section else None
                 if hide_tag:
