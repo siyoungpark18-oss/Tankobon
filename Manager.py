@@ -928,7 +928,7 @@ def find_duplicates(config, cancel=None):
             print("")
             return
         try:
-            digest = hashlib.md5(f.read_bytes()).hexdigest()
+            digest = hashlib.lib.sha256(f.read_bytes()).hexdigest()
             file_digests[f] = digest
             if digest in hashes:
                 duplicates.add(f)
