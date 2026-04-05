@@ -7,6 +7,7 @@ import queue
 import sys
 import shutil
 import webbrowser
+import functools
 
 #IMPORT FROM MANAGER——————————————————————————————————————————————————————————————————————————————————————
 from Manager import (
@@ -786,6 +787,7 @@ class App:
 
     # ── job running ───────────────────────────────────────────────────────────
 
+    @functools.cached_property
     def _tool_fns(self):
         return {
             "Folders to PDF":     lambda: folders_to_pdf(self.config, self.cancel_event),
@@ -802,7 +804,7 @@ class App:
         }
 
     def _inject_and_run(self, run_fn, choice, job_name):
-        tool_fns = self._tool_fns()
+        tool_fns = self._tool_fns
         direct_fn = tool_fns.get(job_name)
         if direct_fn is None:
             self._run(run_fn, job_name=job_name)
