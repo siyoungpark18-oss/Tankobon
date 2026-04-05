@@ -11,11 +11,10 @@ There is some setup involved. See **Setup**
 <br>
 
 ## To Open Tankobon ##
-*On Mac, use the resource here: https://docs.google.com/document/d/1NNl6HVrSsu0wnXz9jT7q-wDegnqZG6BhiFBO4z1ihXI/edit?tab=t.z2967vfkgxn2*
-*to download a .dmg file and open it like any other application. You will have to go through privacy and security sections to give MacOS permission to open it as I am not a registered developer* The alternative is installing it in the same way a Windows or Linux user would.
+On Mac, use the resource here: *https://drive.google.com/drive/u/2/folders/1DDJeCJzbLldOlOj6I0NC7C-7LKknRsL2* to download a .dmg file and open it like any other application. 
+You will have to go through privacy and security sections to give MacOS permission to open it as I am not a registered developer
 
-For Windows or Linux, download the zip right off of github and simply open Interface.py
-Windows and Linux Builds will come shortly
+On Windows use the resource here: *https://drive.google.com/drive/u/2/folders/1CJa1_Xs59f6V0MoZDcGeH6AjkI2S0Jh6* to download the zip file. Expand it and execute the .exe file to use the application.
 <br>
 <br>
 
