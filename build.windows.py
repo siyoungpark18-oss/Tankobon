@@ -142,7 +142,7 @@ if __name__ == "__main__":
         prepare_poppler_windows()
         install_dependencies()
         build_app()
-        print(f"\n✓ Done! Distribute the folder: dist/{APP_NAME}/")
+        print(f"\nDone! Distribute the folder: dist/{APP_NAME}/")
         print(f"  Run with: dist/{APP_NAME}/{APP_NAME}.exe")
     except subprocess.CalledProcessError as e:
         print(f"\nBuild failed: {e}")
