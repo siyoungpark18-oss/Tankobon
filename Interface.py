@@ -580,7 +580,7 @@ class App:
         for w in self._btn_frame.winfo_children():
             w.destroy()
 
-        if self.config.get("ui_mode", "classic") == "dropdown":
+        if self.config.get("ui_mode", "dropdown") == "dropdown":
             self._build_dropdown_buttons()
         else:
             self._build_classic_buttons()
