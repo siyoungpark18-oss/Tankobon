@@ -6,7 +6,7 @@ It is local application that Free, Open Source, Cross-platform, made for persona
 *Its sole purpose of existence is to make manga piracy easier.*
 
 ## Download ##
-Get the tool from the [releases](https://github.com/siyoungpark18-oss/Tankobon/releases) page
+Get the tool from the [releases page](https://github.com/siyoungpark18-oss/Tankobon/releases) on github.
 
 ## Why Use Tankobon? ##
 
@@ -14,11 +14,9 @@ Get the tool from the [releases](https://github.com/siyoungpark18-oss/Tankobon/r
 It can convert, re-organize, and combine **thousands of files in a matter of minutes to seconds. This is orders of magnitude faster than most browser based tools or applications.**
 -   *Tankobon does this by utilizing your local file system rather than requiring the user to upload files to an app or cloud. This is what allows the app to be entirely local.*
 
-## Setup ##
-When you first begin the program, **please set the directories for the Input and Output within your file system and give the application permissions to read/write files there for actual functionality**
-
 ## File System ##
-***The file system is organized into an Input and Output folder*** 
+Tankobon uses an Input and Output folder system to import and export files
+
 The Input folder is where files are moved to for processing with the tools. *Files from the Input folder are copied from your file system*
 Do this using the **Add to Input** Button
 
@@ -36,7 +34,6 @@ For Tankobon, there is a rather clear cut intentional workflow that should be fo
 Once you are done, add new files with **Add to Input** and continue the process. You can even add the current output with **From Output**
 
 ## Utilities ##
-Other tools
 ***Status:*** States whats in the input and output. Using the ▲ and ▼ buttons, you can expand the log dialogue to see what subfolders are inside. 
 *For conciseness, Status and other expandable tools only show subfolders and not individual files*
 
@@ -55,13 +52,12 @@ for all its speed, it has some pretty quirky limitations.
 - **Only 1 folder can be attached at a time!** *If you want to process folders at a time, move all of the folders into 1 main folder beforehand and attach that main folder.*
 If you have multiple folders of chapters you want to modify, simply put all chapters in one main folderand then you can attach that folder with its subfolders all at once. This is a known limitation and will eventually be changed
 
-- In all processes the tool is capable of, **you cannot pick the files within the input that are to be processed.** It will process all of the files in the input automatically, and this is intentional. **To avoid processing unrelated folders or files, you should clear the input folder periodically when you’re done with the current files** in input and then add newer ones left to process. This is the intended workflow and prevents the program from having to constantly ask you what to process.
+- In all processes the tool is capable of, **you can't choose what files in the input input folder that you want processed.** Tankobon will process all of the files in the input, and this is intentional. Once you're done with the files in input, simply clear them with **clear input**.
 
-Everything in the input is simply processed in its entirity. And it is meant to be this way. Reference the Intended workflows to see how the workflow functions with it.
 
 ## Throttle ##
 Limits to CPU and RAM Usage
 
-*Under certain circumstances, Tankobon can easily cause your computer to freeze due to taking up all the ram and CPU on your computer.* **There is a throttle set by default that limits how much cpu and ram Tankobon can use to prevent this. The default is 80%**
+*Tankobon can easily cause your computer to freeze due to taking up all the ram and CPU on your computer.* **There is a throttle set by default that limits how much cpu and ram Tankobon can use to prevent this. The default is 80%**
 
 ***If your comptuer is already using CPU or RAM above te throttle set, the tools will immediately pause, and appear as if they have not started!***
