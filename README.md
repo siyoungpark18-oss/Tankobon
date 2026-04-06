@@ -18,28 +18,27 @@ The only limit to this programs speed is your hardware.
 Get the tool from the releases page on github.
 
 ## Documentation ##
-For More information on how to use the program, reference the [documentation](https://docs.google.com/document/d/1NNl6HVrSsu0wnXz9jT7q-wDegnqZG6BhiFBO4z1ihXI/edit?tab=t.9sgxnstj5tcj) of tankobon.
+For More information on how to use the program, reference the [documentation](https://docs.google.com/document/d/1NNl6HVrSsu0wnXz9jT7q-wDegnqZG6BhiFBO4z1ihXI/edit?tab=t.fnd4odygzbvz) of tankobon.
 
 ## Features ##
 - Combine Folders of Images into 1 Folder
 - Combine Folders of Images into 1 PDF
-- Split and Combine PDFs
-- Convert PDFs into their Source Images
-- Recursively Convert Images files into a Different Format
-- Rename Thousands of Files at Once
-- Rename Multiple Folders at Once
-- Name Folders based on the Numbers in their Filename
-- Name Files based on the Numbers in their Filename
+- Use PDFs to get their Source Images 
+- Convert Folders of Images files into a Different file Format to standardize file formats
+- Name Folders based on the Numbers in their Filename for easier Folder Organization
+- Name Files based on the Numbers in their Filename to standardize file names
 - Find Duplicate Images and Delete them — Useful for Deleting Scanalater Advertisements or Repetitive Images
 
+And More. . .
+
 ## Costomization ##
-- Add Timestamps
 - Increase and Decrease the size of the text in the Log
 - Dark Mode and Light Mode
 - Choose What tools appear in the sidebar
-- Dim tools when the Input is Empty
 - Sort the Output by Operation
 - Name Each OutPut
 - Expand and Compress Log Dialogue
 - Use multiple tools at the same time
 - Costomize All Colors in the Tool
+
+And more. . .
