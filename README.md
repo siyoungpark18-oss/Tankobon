@@ -17,6 +17,9 @@ The only limit to this programs speed is your hardware.
 ## Download ##
 Get the tool from the releases page on github.
 
+## Documentation ##
+For More information on how to use the program, reference the [documentation](https://docs.google.com/document/d/1NNl6HVrSsu0wnXz9jT7q-wDegnqZG6BhiFBO4z1ihXI/edit?tab=t.9sgxnstj5tcj) of tankobon.
+
 ## Features ##
 - Combine Folders of Images into 1 Folder
 - Combine Folders of Images into 1 PDF
@@ -40,6 +43,3 @@ Get the tool from the releases page on github.
 - Expand and Compress Log Dialogue
 - Use multiple tools at the same time
 - Costomize All Colors in the Tool
- 
-## Documentation ##
-For More information on how to use the program, reference the [documentation](https://docs.google.com/document/d/1NNl6HVrSsu0wnXz9jT7q-wDegnqZG6BhiFBO4z1ihXI/edit?tab=t.9sgxnstj5tcj) of tankobon.
