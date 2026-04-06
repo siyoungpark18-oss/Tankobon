@@ -1,14 +1,13 @@
 # Tankobon. #
 
-Tankobon is a manga file manager. 
-It is local application that Free, Open Source, Cross-platform, made for personal computers. 
+Tankobon is a Free & Open source manga file manager. 
 
 *Its sole purpose of existence is to make manga piracy easier.*
 
 ## Why Use Tankobon? ##
 
 *Tankobon’s Advantage lies in sheer speed and scale.* 
-It can convert, re-organize, and combine **thousands of files in a matter of minutes to seconds. This is orders of magnitude faster than most browser based tools or applications.**
+It can convert, re-organize, and combine *thousands of files in a matter of minutes to seconds.
 -   *Tankobon does this by utilizing your local file system rather than requiring the user to upload files to an app or cloud. This is what allows the app to be entirely local.*
 
 ## Download ##
@@ -34,13 +33,9 @@ Once you are done, add new files with **Add to Input** and continue the process.
 
 ## Utilities ##
 ***Status:*** States whats in the input and output. Using the ▲ and ▼ buttons, you can expand the log dialogue to see what subfolders are inside. 
-
 ***Clear Log:*** Clears the Log and all of its contents, including any expandable dialogue ( ▲ ▼ )
-
 ***Open Output:*** Opens the Output folder. Use this tool as a shortcut to open the output folder and move files in it to your main file system. 
-
 ***Clear Output:*** Clears the Output folder and all of its contents
-
 ***Cancel Operation:*** Cancels the operation.
 
 ## Limitations ##
