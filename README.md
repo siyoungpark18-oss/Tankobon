@@ -28,6 +28,18 @@ Get the tool from the releases page on github.
 - Name Folders based on the Numbers in their Filename
 - Name Files based on the Numbers in their Filename
 - Find Duplicate Images and Delete them — Useful for Deleting Scanalater Advertisements or Repetitive Images
+
+## Costomization ##
+- Add Timestamps
+- Increase and Decrease the size of the text in the Log
+- Dark Mode and Light Mode
+- Choose What tools appear in the sidebar
+- Dim tools when the Input is Empty
+- Sort the Output by Operation
+- Name Each OutPut
+- Expand and Compress Log Dialogue
+- Use multiple tools at the same time
+- Costomize All Colors in the Tool
  
 ## Documentation ##
 For More information on how to use the program, reference the [documentation](https://docs.google.com/document/d/1NNl6HVrSsu0wnXz9jT7q-wDegnqZG6BhiFBO4z1ihXI/edit?tab=t.9sgxnstj5tcj) of tankobon.
