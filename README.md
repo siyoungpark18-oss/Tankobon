@@ -5,17 +5,17 @@ It is local application that Free, Open Source, Cross-platform, made for persona
 
 *Its sole purpose of existence is to make manga piracy easier.*
 
-## Download ##
-Get the tool from the [releases page](https://github.com/siyoungpark18-oss/Tankobon/releases) on github.
-
 ## Why Use Tankobon? ##
 
 *Tankobon’s Advantage lies in sheer speed and scale.* 
 It can convert, re-organize, and combine **thousands of files in a matter of minutes to seconds. This is orders of magnitude faster than most browser based tools or applications.**
 -   *Tankobon does this by utilizing your local file system rather than requiring the user to upload files to an app or cloud. This is what allows the app to be entirely local.*
 
-## File System ##
-Tankobon uses an Input and Output folder system to import and export files
+## Download ##
+Get the tool from the [releases page](https://github.com/siyoungpark18-oss/Tankobon/releases) on github.
+
+## How it Works ##
+Tankobon uses an Input and Output folder system to import and export files.
 
 The Input folder is where files are moved to for processing with the tools. *Files from the Input folder are copied from your file system*
 Do this using the **Add to Input** Button
@@ -23,7 +23,6 @@ Do this using the **Add to Input** Button
 The Output folder is where these files go to when they are processed. *Files from the Output folder are copied from the Input folder with their modifications*
 To export the processed files and move them back into your file system, use the **Open Output** Button
 
-## Intended Workflow ##
 For Tankobon, there is a rather clear cut intentional workflow that should be followed to use the program smoothly
 
 1. Add Files to the Input folder with the **Add to Input** tool
@@ -35,7 +34,6 @@ Once you are done, add new files with **Add to Input** and continue the process.
 
 ## Utilities ##
 ***Status:*** States whats in the input and output. Using the ▲ and ▼ buttons, you can expand the log dialogue to see what subfolders are inside. 
-*For conciseness, Status and other expandable tools only show subfolders and not individual files*
 
 ***Clear Log:*** Clears the Log and all of its contents, including any expandable dialogue ( ▲ ▼ )
 
@@ -43,8 +41,7 @@ Once you are done, add new files with **Add to Input** and continue the process.
 
 ***Clear Output:*** Clears the Output folder and all of its contents
 
-***Cancel Operation:*** Cancels the operation. For some operations this takes some time. 
-Cancel checks happen periodically so that the operations are held back.
+***Cancel Operation:*** Cancels the operation.
 
 ## Limitations ##
 for all its speed, it has some pretty quirky limitations.
