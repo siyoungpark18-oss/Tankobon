@@ -15,24 +15,8 @@ It can convert, re-organize, and combine *thousands of files in a matter of minu
 ## Download ##
 Get the tool from the [releases page](https://github.com/siyoungpark18-oss/Tankobon/releases) on github.
 
-## How it Works ##
-Tankobon uses an Input and Output folder system to import and export files.
-
-The Input folder is where files are moved to for processing with the tools. *Files from the Input folder are copied from your file system*
-Do this using the **Add to Input** Button
-
-The Output folder is where these files go to when they are processed. *Files from the Output folder are copied from the Input folder with their modifications*
-To export the processed files and move them back into your file system, use the **Open Output** Button
-
-For Tankobon, there is a rather clear cut intentional workflow that should be followed to use the program smoothly
-
-1. Add Files to the Input folder with the **Add to Input** tool                                                                                                                          
-2. Use the **File and Folder Tools** to process the input. *The input is not modified in the proccess, so multiple processes can be done on with same input*                             
-3. Export the Output files and move them back into your file system using **Open Output**                                                                                                
-4. Once you are done with the current input, clear the input with **Clear Input**
-
-Once you are done, add new files with **Add to Input** and continue the process. You can even add the current output with **From Output**
-
+## Documentation ##
+For further Documentation and Usage Guides, reference the [documentation]() of tankobon.
 
 
 ## Limitations ##
