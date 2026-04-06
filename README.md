@@ -4,6 +4,8 @@ Tankobon is a Free & Open source manga file manager. 
 
 *Its sole purpose of existence is to make manga piracy easier.*
 
+<img width="1160" height="628" alt="Screenshot 2026-04-05 at 6 38 11 PM" src="https://github.com/user-attachments/assets/61219735-cd31-4bbe-ac99-4d29d16ab1a8" />
+
 ## Why Use Tankobon? ##
 
 *Tankobon’s Advantage lies in sheer speed and scale.* 
@@ -31,12 +33,7 @@ For Tankobon, there is a rather clear cut intentional workflow that should be fo
 
 Once you are done, add new files with **Add to Input** and continue the process. You can even add the current output with **From Output**
 
-## Utilities ##
-***Status:*** States whats in the input and output. Using the ▲ and ▼ buttons, you can expand the log dialogue to see what subfolders are inside.                                        
-***Clear Log:*** Clears the Log and all of its contents, including any expandable dialogue ( ▲ ▼ )                                                                                       
-***Open Output:*** Opens the Output folder. Use this tool as a shortcut to open the output folder and move files in it to your main file system.                                         
-***Clear Output:*** Clears the Output folder and all of its contents                                                                                                                     
-***Cancel Operation:*** Cancels the operation.
+
 
 ## Limitations ##
 **Only 1 folder can be attached at a time!** *If you want to process folders at a time, move all of the folders into 1 main folder beforehand and attach that main folder.*
