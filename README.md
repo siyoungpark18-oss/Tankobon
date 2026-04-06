@@ -16,7 +16,7 @@ It can convert, re-organize, and combine *thousands of files in a matter of minu
 Get the tool from the [releases page](https://github.com/siyoungpark18-oss/Tankobon/releases) on github.
 
 ## Documentation ##
-For further Documentation and Usage Guides, reference the [documentation]() of tankobon.
+For further Documentation and Usage Guides, reference the [documentation](https://docs.google.com/document/d/1NNl6HVrSsu0wnXz9jT7q-wDegnqZG6BhiFBO4z1ihXI/edit?tab=t.9sgxnstj5tcj) of tankobon.
 
 
 ## Limitations ##
