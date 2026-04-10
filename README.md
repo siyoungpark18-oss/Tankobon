@@ -22,18 +22,18 @@ For More information on how to use the program, reference the [documentation](ht
 
 ## Tools ##
 Combine Folders of Image Sets into 1 Folder
-+Combine manga chapters into a single PDF
+- Combine manga chapters into a single PDF
 
 Convert PDFs to get their Source Images
 
 Convert Images nested within multiple Folders into Different File Formats
-+standardize file formats within image sets 
+- standardize file formats within image sets 
 
 Name Folders based on the Numbers in their Filename
-+allows for easier Folder Organization with alphabetic sorting
+- allows for easier Folder Organization with alphabetic sorting
 
 Find Duplicate Images and Delete them 
-+Useful for Deleting Scanalater Advertisements or Repetitive Images, like the starting page of webtoons
+- Useful for Deleting Scanalater Advertisements or Repetitive Images, like the starting page of webtoons
 
 And More. . .
 
