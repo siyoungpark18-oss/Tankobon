@@ -58,5 +58,6 @@ And more. . .
 <img width="1440" height="900" alt="Screenshot 2026-04-10 at 3 11 10 PM" src="https://github.com/user-attachments/assets/bcb61010-ba89-4964-97dc-7fd39e32707b" />
 The Preview Feature in find duplicates
 <br>
+<br>
 <img width="1440" height="748" alt="Screenshot 2026-04-10 at 11 24 58 AM" src="https://github.com/user-attachments/assets/e3cb8d89-bbd5-4a4c-ae8a-434ac4e37a80" />
 Combining image sets into PDFs
