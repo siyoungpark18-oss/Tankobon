@@ -32,6 +32,9 @@ Convert Images nested within multiple Folders into Different File Formats
 Name Folders based on the Numbers in their Filename
 - allows for easier Folder Organization with alphabetic sorting
 
+Rename Folders and Files
+- Standardize File and Folder names and make them easier to organize
+
 Find Duplicate Images and Delete them 
 - Useful for Deleting Scanalater Advertisements or Repetitive Images, like the starting page of webtoons
 
