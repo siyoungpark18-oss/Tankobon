@@ -1,9 +1,11 @@
+
 # Tankobon. #
 
 Tankobon is a Free & Open source manga file manager. 
 
 *Its sole purpose of existence is to make manga piracy easier.*
 
+<img width="1440" height="900" alt="Screenshot 2026-04-10 at 11 22 24 AM" src="https://github.com/user-attachments/assets/43b593a9-af7b-4f13-9cfb-b8ecd3a0bea1" />
 <img width="1160" height="628" alt="Screenshot 2026-04-05 at 6 38 11 PM" src="https://github.com/user-attachments/assets/61219735-cd31-4bbe-ac99-4d29d16ab1a8" />
 
 ## Why Use Tankobon? ##
