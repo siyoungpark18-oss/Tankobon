@@ -61,6 +61,7 @@ The Preview Feature in find duplicates. You can use find duplicates to find mang
 <br>
 <img width="1440" height="748" alt="Screenshot 2026-04-10 at 11 24 58 AM" src="https://github.com/user-attachments/assets/e3cb8d89-bbd5-4a4c-ae8a-434ac4e37a80" />
 Combining multiple image sets into a single PDF as shown here
+
 <br>
 <img width="675" height="484" alt="Screenshot 2026-04-11 at 11 09 13 AM" src="https://github.com/user-attachments/assets/43fbe14f-bdae-4d26-8ba5-c90277b13454" />
 Costomize Everything in the Preferences Page by clicking the ☰ button, including all the colors shown in the examples before
