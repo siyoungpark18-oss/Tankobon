@@ -65,4 +65,4 @@ Combining multiple image sets into a single PDF as shown here
 <br>
 <img width="675" height="484" alt="Screenshot 2026-04-11 at 11 09 13 AM" src="https://github.com/user-attachments/assets/43fbe14f-bdae-4d26-8ba5-c90277b13454" />
 <br>
-Costomize Everything in the Preferences Page by clicking the ☰ button, including all the colors shown in the examples before
+Costomize Everything in the Preferences Page by clicking the ☰ button, including all the colors costomization shown in the examples before
