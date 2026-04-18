@@ -51,7 +51,8 @@ DEFAULTS = {
     "first_launch":              True,
     "log_blank_lines":           False,
     "ui_mode":                   "dropdown",
-    "log_font_size":             8
+    "log_font_size":             8,
+    "default_images_to_pdf_mode": "ask",
 }
 
 #FUNCTIONS——————————————————————————————————————————————————————————————————————————————————————————————————
@@ -441,22 +442,73 @@ def images_to_pdf(config, cancel=None):
     ext_counts = Counter(f.suffix.lower() for f in image_files)
     summary = "  ".join(f"{v}× {k}" for k, v in sorted(ext_counts.items()))
     print(f"  Found {len(image_files)} images:  {summary}")
+
+    mode = config.get("default_images_to_pdf_mode", "ask")
+    if mode == "ask":
+        raw = input("Mode? 1=Combine all (default)  2=Reorder & Combine: ").strip()
+        if raw == SENTINEL:
+            return _cancel()
+        mode = "reorder & combine" if raw == "2" else "combine"
+    else:
+        print(f"  Mode: {mode}")
+
+    if mode == "reorder & combine":
+        print(f"  Enter file indices (1–{len(image_files)}) separated by commas.")
+        print(f"  Leave blank to use all files in default order.")
+        raw = input("Order: ").strip()
+        if raw == SENTINEL:
+            return _cancel()
+
+        if not raw:
+            print("  No order given — using all files in default order.")
+            final_files = image_files
+            out_of_range = []
+        else:
+            indices = [s.strip() for s in raw.split(",")]
+            final_files = []
+            out_of_range = []
+            for s in indices:
+                try:
+                    idx = int(s)
+                    if 1 <= idx <= len(image_files):
+                        final_files.append(image_files[idx - 1])
+                    else:
+                        out_of_range.append(s)
+                except ValueError:
+                    out_of_range.append(s)
+
+            if not final_files:
+                print("  No valid indices entered. Aborting.")
+                print("")
+                return
+
+            print(f"  Using {len(final_files)} file(s) in specified order.")
+    else:
+        final_files = image_files
+        out_of_range = []
+
     if cancel and cancel.is_set():
         print("  Cancelled.")
         print("")
         return
+
     try:
-        save_pdf(image_files, out / "output.pdf")
+        save_pdf(final_files, out / "output.pdf")
     except OSError as e:
         if _is_no_space(e):
             print(f"  ✖ Job stopped — disk full. PDF may be incomplete.")
             print("")
             return
         raise
-    _print_summary(copied=len(image_files), skipped=skipped or None, label="converted")
+
+    if out_of_range:
+        print(f"  ⚠ {len(out_of_range)} invalid or out-of-range index/indices skipped: {', '.join(out_of_range)}")
+
+    _print_summary(copied=len(final_files), skipped=skipped or None, label="converted")
     do_auto_clear(config)
     print(f"  Done! → {out}")
     print("")
+
 
 
 def folder_renamer(config, cancel=None):
@@ -1243,25 +1295,30 @@ def pdf_splitter(config, cancel=None):
 
     total = len(reader.pages)
     print(f"  Loaded: {pdf_path.name}  ({total} pages)")
-    print(f"  Enter page numbers to split after. Empty input = done.")
-    print(f"  Valid range: 1–{total - 1}")
 
     splits = [0]
-    while True:
-        cmd = input(f"Split after page (1-{total - 1}), or Enter to finish: ").strip().lower()
-        if cmd == SENTINEL:
-            return _cancel()
-        if cmd in ("exit", ""):
-            break
-        try:
-            page_num = int(cmd)
-            if page_num < 1 or page_num >= total:
-                print(f"  Must be between 1 and {total - 1}.")
-                continue
-            splits.append(page_num)
-            print(f"  ✓ Split marked after page {page_num}. ({len(splits) - 1} split(s) so far)")
-        except ValueError:
-            print("  Invalid input.")
+    print(f"  Enter page numbers to split after, separated by commas (e.g. 10,25,60).")
+    raw = input(f"Split after pages (1–{total - 1}): ").strip()
+    if raw == SENTINEL:
+        return _cancel()
+    if raw:
+        out_of_range = []
+        for s in [x.strip() for x in raw.split(",")]:
+            try:
+                page_num = int(s)
+                if 1 <= page_num < total:
+                    splits.append(page_num)
+                else:
+                    out_of_range.append(s)
+            except ValueError:
+                out_of_range.append(s)
+        if out_of_range:
+            print(f"  ⚠ Skipped invalid or out-of-range: {', '.join(out_of_range)}")
+        if splits == [0]:
+            print("  No valid page numbers entered. Aborting.")
+            print("")
+            return
+        print(f"  {len(splits) - 1} split(s) marked after pages: {', '.join(str(s) for s in splits[1:])}")
 
     splits = sorted(set(splits))
     splits.append(total)
