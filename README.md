@@ -66,3 +66,8 @@ Combining multiple image sets into a single PDF as shown here
 <img width="675" height="484" alt="Screenshot 2026-04-11 at 11 09 13 AM" src="https://github.com/user-attachments/assets/43fbe14f-bdae-4d26-8ba5-c90277b13454" />
 <br>
 Costomize Everything in the Preferences Page by clicking the ☰ button, including all the colors costomization shown in the examples before
+
+
+## Ai ##
+I used claude to code.
+That being said learning how to use github and pycharm and refactoring files manually was still a pain. Plus I do know how to code and do manual code editing.
