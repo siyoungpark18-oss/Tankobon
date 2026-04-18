@@ -459,7 +459,7 @@ class App:
     # ── ui build ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        self._log_font_size = 8
+        self._log_font_size = self.config.get("log_font_size", 8)
 
         left = tk.Frame(self.root, width=200)
         left.pack(side='left', fill='y', padx=10, pady=10)
@@ -540,6 +540,8 @@ class App:
         def _change_font(delta):
             self._log_font_size = max(7, min(24, self._log_font_size + delta))
             self.log.configure(font=('Courier', self._log_font_size))
+            self.config["log_font_size"] = self._log_font_size
+            save_config(self.config)
 
         for symbol, delta in (('+', 1), ('-', -1)):
             btn = tk.Label(log_header, text=symbol, font=('', 7, 'bold'),
