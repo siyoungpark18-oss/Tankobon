@@ -50,8 +50,8 @@ DEFAULTS = {
     "open_output_recent":        False,
     "first_launch":              True,
     "log_blank_lines":           False,
-    "ui_mode": "dropdown",
-
+    "ui_mode":                   "dropdown",
+    "log_font_size":             8
 }
 
 #FUNCTIONS——————————————————————————————————————————————————————————————————————————————————————————————————
@@ -1231,7 +1231,7 @@ def pdf_splitter(config, cancel=None):
         print("")
         return
     if len(pdfs) > 1:
-        print(f"  Multiple PDFs found, using first: {pdfs[0].name}")
+        print(f"  Multiple PDFs found, only the first pdf: {pdfs[0].name} will be used")
     pdf_path = pdfs[0]
 
     try:
