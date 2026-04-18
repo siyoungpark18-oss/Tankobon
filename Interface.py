@@ -61,7 +61,7 @@ class App:
 
     TOOL_OPTIONS = {
         "Folders to PDF":     ["combine", "individual"],
-        "Images to PDF":      [],
+        "Images to PDF":      ["combine", "reorder & combine"],
         "Folder Renamer":     ["prefix", "suffix", "replace", "extract number"],
         "File Renamer":       ["prefix", "suffix", "replace", "sequence"],
         "Combine Image Sets": [],
@@ -80,6 +80,8 @@ class App:
         "Image Converter": "default_img_fmt",
         "Find Duplicates": "default_dedupe_mode",
         "PDF to Images":   "default_pdf_to_images_fmt",
+        "Images to PDF":   "default_images_to_pdf_mode",
+
     }
 
     OPTION_LABELS = {
@@ -100,6 +102,7 @@ class App:
         "files":          "Files",
         "folder":         "Individual Folder",
         "output":         "From Output",
+        "reorder & combine": "Reorder & Combine",
     }
 
     TOGGLEABLE = [
