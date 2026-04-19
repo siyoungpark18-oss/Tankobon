@@ -270,6 +270,7 @@ def show_preferences(app):
 
     tools_fields = [
         ("default_folders_to_pdf_mode", "Folders to PDF: Default Mode",  "combo", ["ask", "combine", "individual"]),
+        ("default_images_to_pdf_mode", "Images to PDF: Default Mode", "combo", ["ask", "combine", "reorder & combine"]),
         ("default_sort",                "Default Sort Mode",              "combo", ["natural", "none"]),
         ("default_folder_renamer_mode", "Folder Renamer: Default Mode",  "combo", ["ask", "prefix", "suffix", "replace", "extract number"]),
         ("default_file_renamer_mode",   "File Renamer: Default Mode",    "combo", ["ask", "prefix", "suffix", "replace", "sequence"]),
