@@ -10,7 +10,7 @@ The Default Interface
 ## Why Use Tankobon? ##
 
 *Tankobon’s Advantage lies in sheer speed and scale.* 
-It can convert, re-organize, and combine *thousands of files in a matter of minutes to seconds.
+It can convert, re-organize, and combine *thousands of files in a matter of minutes to seconds.*
 -   *Tankobon does this by utilizing your local file system rather than requiring the user to upload files to an app or cloud. This is what allows the app to be entirely local.*
 
 The only limit to this programs speed is your hardware.
