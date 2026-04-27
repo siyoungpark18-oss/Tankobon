@@ -22,24 +22,8 @@ Get the tool from the [releases page](https://github.com/siyoungpark18-oss/Tanko
 For More information on how to use the program, reference the [documentation](https://docs.google.com/document/d/1NNl6HVrSsu0wnXz9jT7q-wDegnqZG6BhiFBO4z1ihXI/edit?tab=t.fnd4odygzbvz) of tankobon.
 
 ## Tools ##
-Combine Folders of Image Sets into 1 Folder
-- Combine manga chapters into a single PDF
 
-Convert PDFs to get their Source Images
 
-Convert Images nested within multiple Folders into Different File Formats
-- standardize file formats within image sets 
-
-Name Folders based on the Numbers in their Filename
-- allows for easier Folder Organization with alphabetic sorting
-
-Rename Folders and Files
-- Standardize File and Folder names and make them easier to organize
-
-Find Duplicate Images and Delete them 
-- Useful for Deleting Scanalater Advertisements or Repetitive Images, like the starting page of webtoons
-
-And More. . .
 
 ## Features ##
 - Increase and Decrease the size of the text in the Log
