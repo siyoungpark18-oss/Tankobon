@@ -22,6 +22,12 @@ Get the tool from the [releases page](https://github.com/siyoungpark18-oss/Tanko
 For More information on how to use the program, reference the [documentation](https://docs.google.com/document/d/1NNl6HVrSsu0wnXz9jT7q-wDegnqZG6BhiFBO4z1ihXI/edit?tab=t.fnd4odygzbvz) of tankobon.
 
 ## Tools ##
+Each tool works with recursive files or subfolders, rather than the main folder.
+
+Folders to PDF
+  Combine each subfolder into a Single PDF
+  Combine each subfolder into its own PDF
+
 
 
 
