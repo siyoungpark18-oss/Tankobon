@@ -28,7 +28,7 @@ IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff',} #DEFAULT 
 SENTINEL = "\x00CANCELLED\x00"
 
 #DEFAULTS——————————————————————————————————————————————————————————————————————————————————————————————————
-DEFAULTS = {
+DEFAULTS = { #The default configurations. These should all be able to change in preferences.py
     "input":                     "",
     "output":                    "",
     "default_sort":              "natural",
@@ -1296,57 +1296,67 @@ def pdf_splitter(config, cancel=None):
     total = len(reader.pages)
     print(f"  Loaded: {pdf_path.name}  ({total} pages)")
 
-    splits = [0]
-    print(f"  Enter page numbers to split after, separated by commas (e.g. 10,25,60).")
-    raw = input(f"Split after pages (1–{total - 1}): ").strip()
+    print(f" Enter page ranges separated by commas (e.g. 1-7, 12-13, 27-3 ).")
+    print("  Printing from 1-7 would print in combine in order and 7-1 would combine backwards")
+    raw = input("Ranges: ").strip()
     if raw == SENTINEL:
         return _cancel()
-    if raw:
-        out_of_range = []
-        for s in [x.strip() for x in raw.split(",")]:
-            try:
-                page_num = int(s)
-                if 1 <= page_num < total:
-                    splits.append(page_num)
-                else:
-                    out_of_range.append(s)
-            except ValueError:
-                out_of_range.append(s)
-        if out_of_range:
-            print(f"  ⚠ Skipped invalid or out-of-range: {', '.join(out_of_range)}")
-        if splits == [0]:
-            print("  No valid page numbers entered. Aborting.")
-            print("")
-            return
-        print(f"  {len(splits) - 1} split(s) marked after pages: {', '.join(str(s) for s in splits[1:])}")
+    if not raw:
+        print("  No ranges entered. Aborting.")
+        print("")
+        return
 
-    splits = sorted(set(splits))
-    splits.append(total)
+    ranges = []
+    invalid = []
+    reversed_ranges = []
+    for s in [x.strip() for x in raw.split(",")]:
+        parts = s.split("-")
+        if len(parts) != 2:
+            invalid.append(s)
+            continue
+        try:
+            a, b = int(parts[0].strip()), int(parts[1].strip())
+        except ValueError:
+            invalid.append(s)
+            continue
+        if a < 1 or a > total or b < 1 or b > total:
+            invalid.append(s)
+            continue
+        if a > b:
+            reversed_ranges.append(s)
+            ranges.append((a, b, True))
+        else:
+            ranges.append((a, b, False))
 
-    if len(splits) < 2:
-        print("  No splits made.")
+    if invalid:
+        print(f"  ⚠ Skipped invalid or out-of-range: {', '.join(invalid)}")
+    if reversed_ranges:
+        print(f"  ⚠ Reversed range(s) will be processed in descending order: {', '.join(reversed_ranges)}")
+    if not ranges:
+        print("  No valid ranges entered. Aborting.")
         print("")
         return
 
     stem = pdf_path.stem
-    part_count = len(splits) - 1
+    part_count = len(ranges)
     print(f"  Writing {part_count} part(s)...")
     failed = []
     written = 0
-    for i in range(part_count):
+    for i, (a, b, descending) in enumerate(ranges):
         if cancel and cancel.is_set():
             print(f"  Cancelled. ({written} part(s) saved so far)")
             print("")
             return
-        start, end = splits[i], splits[i + 1]
+        page_indices = list(range(a - 1, b - 2, -1) if descending else range(a - 1, b))
         try:
             writer = PdfWriter()
-            for p in range(start, end):
+            for p in page_indices:
                 writer.add_page(reader.pages[p])
             out_path = out / f"{stem}_part{i + 1}.pdf"
             with open(out_path, "wb") as f:
                 writer.write(f)
-            print(f"  Part {i + 1}/{part_count}: pages {start + 1}–{end}  →  {out_path.name}")
+            direction = f" (reversed)" if descending else ""
+            print(f"  Part {i + 1}/{part_count}: pages {a}–{b}{direction}  →  {out_path.name}")
             written += 1
         except OSError as e:
             if _is_no_space(e):
@@ -1354,9 +1364,9 @@ def pdf_splitter(config, cancel=None):
                 _print_summary(copied=written, failed=failed or None, label="parts saved")
                 print("")
                 return
-            failed.append((pdf_path, f"part {i+1}: {e}"))
+            failed.append((pdf_path, f"part {i + 1}: {e}"))
         except Exception as e:
-            failed.append((pdf_path, f"part {i+1}: {e}"))
+            failed.append((pdf_path, f"part {i + 1}: {e}"))
 
     _print_summary(copied=written, failed=failed or None, label="parts saved")
     do_auto_clear(config)
@@ -1435,7 +1445,8 @@ def info():
 All output goes to output/
 """)
 
-
+# Unused code. Manager.py primarily functions as a backend for Interface.py
+# The area below allos the manager.py to run on its own
 def command_line():
     config = load_config()
     print("\nFile & Folder Manager — type 'info' for commands")
