@@ -1,12 +1,3 @@
-"""
-Build script for Tankobon — Windows
-Run this from the project folder: python build.windows.py
-
-Prerequisites:
-  1. Python 3.8+ installed from python.org (with tkinter checked)
-  2. Internet connection (Poppler for Windows is downloaded automatically)
-"""
-
 import subprocess
 import sys
 import shutil
