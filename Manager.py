@@ -952,6 +952,10 @@ def find_duplicates(config, cancel=None):
     if not _check_disk_space(out, config):
         return
 
+    # ── hash method (set in Preferences) ─────────────────────────────────────
+    hash_method = config.get("default_dedupe_hash", "exact")
+    print(f"  Hash: {hash_method}")
+
     all_files_raw = list(src.rglob("*"))
     all_files = []
     skipped = []
@@ -968,26 +972,68 @@ def find_duplicates(config, cancel=None):
     if use_sort:
         all_files = sorted(all_files, key=lambda x: natural_sort_key(x.name))
 
-    print(f"  Hashing {len(all_files)} image(s)...")
-
-    file_digests = {}
-    hashes = {}
-    duplicates = set()
     hash_failed = []
-    for i, f in enumerate(all_files):
-        if cancel and cancel.is_set():
-            print("  Cancelled.")
-            print("")
-            return
-        try:
-            digest = hashlib.sha256(f.read_bytes()).hexdigest()
-            file_digests[f] = digest
-            if digest in hashes:
-                duplicates.add(f)
-            else:
-                hashes[digest] = f
-        except Exception as e:
-            hash_failed.append((f, str(e)))
+    duplicates  = set()
+    dup_groups  = []
+
+    if hash_method == "exact":
+        print(f"  Scanning {len(all_files)} image(s)...")
+        seen = {}
+        file_digests = {}
+        for f in all_files:
+            if cancel and cancel.is_set():
+                print("  Cancelled.")
+                print("")
+                return
+            try:
+                digest = hashlib.sha256(f.read_bytes()).hexdigest()
+                file_digests[f] = digest
+                if digest in seen:
+                    duplicates.add(f)
+                else:
+                    seen[digest] = f
+            except Exception as e:
+                hash_failed.append((f, str(e)))
+
+        # Build dup_groups for consistent reporting
+        groups_by_digest = {}
+        for f, d in file_digests.items():
+            groups_by_digest.setdefault(d, []).append(f)
+        dup_groups = [g for g in groups_by_digest.values() if len(g) > 1]
+
+    else:
+        import imagehash
+        PHASH_THRESHOLD = config.get("phash_threshold", 4)
+        print(f"  Scanning {len(all_files)} image(s) (threshold={PHASH_THRESHOLD})...")
+
+        file_phashes = {}
+        for f in all_files:
+            if cancel and cancel.is_set():
+                print("  Cancelled.")
+                print("")
+                return
+            try:
+                with Image.open(f) as img:
+                    file_phashes[f] = imagehash.phash(img)
+            except Exception as e:
+                hash_failed.append((f, str(e)))
+
+        representatives = []
+        groups = []
+        for f in [f for f in all_files if f in file_phashes]:
+            ph = file_phashes[f]
+            matched = False
+            for i, (_, rep_ph) in enumerate(representatives):
+                if (ph - rep_ph) <= PHASH_THRESHOLD:
+                    groups[i].append(f)
+                    matched = True
+                    break
+            if not matched:
+                representatives.append((f, ph))
+                groups.append([f])
+
+        dup_groups = [g for g in groups if len(g) > 1]
+        duplicates = {f for g in dup_groups for f in g[1:]}
 
     if not duplicates:
         print(f"  No duplicates found across {len(all_files)} images.")
@@ -996,7 +1042,7 @@ def find_duplicates(config, cancel=None):
         print("")
         return
 
-    print(f"  Found {len(duplicates)} duplicate(s) out of {len(all_files)} images.")
+    print(f"  Found {len(dup_groups)} duplicate group(s), {len(duplicates)} redundant image(s).")
 
     mode = config.get("default_dedupe_mode", "ask")
     if mode == "ask":
@@ -1008,10 +1054,9 @@ def find_duplicates(config, cancel=None):
         print(f"  Mode: {mode}")
 
     if mode == "delete all":
-        duped_digests = {file_digests[f] for f in duplicates}
-        exclude = {f for f, d in file_digests.items() if d in duped_digests}
+        exclude = {f for g in dup_groups for f in g}
     elif mode == "keep one copy":
-        exclude = duplicates
+        exclude = duplicates  # exact: all but first seen; perceptual: all but group[0]
     else:
         print("  Invalid mode.")
         print("")
@@ -1032,7 +1077,7 @@ def find_duplicates(config, cancel=None):
     keep_list = [f for f in all_files if f not in exclude]
     copied = 0
     failed = []
-    for i, f in enumerate(keep_list):
+    for f in keep_list:
         dest = out / f.relative_to(src)
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
