@@ -5,6 +5,8 @@ import re
 import shutil
 import img2pdf
 import json
+import copy
+import os
 import hashlib
 import time
 import psutil
@@ -23,7 +25,7 @@ _POPPLER_PATH = _get_poppler_path()
 #PATHS————————————————————————————————————————————————————————————————————————————————————————————————————
 CONFIG_PATH = Path.home() / ".tankobon" / "config.json"
 
-IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff',} #DEFAULT IMAGE EXTENSIONS FOR MOST TOOLS
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif'} #DEFAULT IMAGE EXTENSIONS FOR MOST TOOLS
 
 SENTINEL = "\x00CANCELLED\x00"
 
@@ -53,24 +55,61 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "ui_mode":                   "dropdown",
     "log_font_size":             8,
     "default_images_to_pdf_mode": "ask",
+    "default_folders_to_pdf_mode": "ask",
+    "default_folder_renamer_mode": "ask",
+    "default_file_renamer_mode":   "ask",
+    "default_dedupe_mode":        "ask",
+    "default_dedupe_hash":        "exact",
+    "guide_empty_input":          True,
+    "show_tooltips":              True,
+    "allow_concurrent_jobs":      False,
+    "themes":                     {},
 }
 
 #FUNCTIONS——————————————————————————————————————————————————————————————————————————————————————————————————
+_config_warning = None
+
+
+def take_config_warning():
+    """Returns (once) a message if the config file had to be reset while loading."""
+    global _config_warning
+    msg, _config_warning = _config_warning, None
+    return msg
+
+
 def load_config():
+    global _config_warning
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = None
     if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, 'r') as f:
-            data = json.load(f)
-        for k, v in DEFAULTS.items():
-            data.setdefault(k, v)
-        return data
-    return DEFAULTS.copy()
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("the file does not contain a settings object")
+        except (ValueError, OSError) as e:       # json.JSONDecodeError is a ValueError
+            backup = CONFIG_PATH.with_name(CONFIG_PATH.name + ".bak")
+            try:
+                shutil.copy2(CONFIG_PATH, backup)
+            except OSError:
+                pass
+            _config_warning = (f"  ⚠ Your settings file could not be read ({e}). Default settings are being used. "
+                               f"The old file was kept as {backup.name}.")
+            data = None
+    if data is None:
+        return copy.deepcopy(DEFAULTS)
+    for k, v in DEFAULTS.items():
+        data.setdefault(k, copy.deepcopy(v))
+    return data
 
 
 def save_config(config):
+    # Write to a temp file first, then swap it in. A crash mid-write can no longer destroy the settings.
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_PATH, 'w') as f:
+    tmp = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    with open(tmp, 'w') as f:
         json.dump(config, f, indent=2)
+    os.replace(tmp, CONFIG_PATH)
 
 
 def get_input(config):
@@ -116,14 +155,28 @@ def resolve_sort(config):
     return config.get("default_sort", "natural") != "none"
 
 
-def throttle_if_needed(config):
+_last_throttle_check = 0.0
+psutil.cpu_percent(interval=None)     # first call only primes the counter
+
+
+def throttle_if_needed(config, cancel=None):
+    """Pause while the computer is busy. Cheap enough to call once per file:
+    it only really measures twice a second, and it does not block while measuring.
+    If `cancel` is set the pause ends immediately so the job can stop."""
+    global _last_throttle_check
     cpu_limit = config.get("throttle_cpu", 80)
     mem_limit = config.get("throttle_mem", 80)
     if cpu_limit == 0 and mem_limit == 0:
         return
+    now = time.monotonic()
+    if now - _last_throttle_check < 0.5:
+        return
+    _last_throttle_check = now
     warned = False
     while True:
-        cpu = psutil.cpu_percent(interval=0.2)
+        if cancel is not None and cancel.is_set():
+            return
+        cpu = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory().percent
         if cpu <= cpu_limit and mem <= mem_limit:
             break
@@ -230,6 +283,22 @@ def _cancel():
     print("")
 
 
+def _warn_name_collisions(preview):
+    """preview = [(old_path, new_path), ...]. Warn if two items would end up with the same new name."""
+    users = {}
+    for old, new in preview:
+        users.setdefault(new, []).append(old)
+    clashes = {new: olds for new, olds in users.items() if len(olds) > 1}
+    if not clashes:
+        return
+    print(f"  ⚠ {len(clashes)} new name(s) would be used more than once. Later items overwrite earlier ones!")
+    start_section, end_section = _get_log_section_fns()
+    start_section(f"  Name clashes ({len(clashes)})")
+    for new, olds in clashes.items():
+        print(f"    {new.name}  ←  " + ",  ".join(o.name for o in olds))
+    end_section()
+
+
 def _print_summary(copied=0, failed=None, skipped=None, label="processed"):
     start_section, end_section = _get_log_section_fns()
     parts = [f"  {label}: {copied}"]
@@ -321,7 +390,7 @@ def folders_to_pdf(config, cancel=None):
                 print("  Cancelled.")
                 print("")
                 return
-            throttle_if_needed(config)
+            throttle_if_needed(config, cancel)
             start_section(f"[{folder.name}]")
             paths, skipped = collect_image_paths(folder, IMAGE_EXTENSIONS, sub_print=print, use_sort=use_sort)
             end_section()
@@ -359,7 +428,7 @@ def folders_to_pdf(config, cancel=None):
                 print(f"  Cancelled. ({total_converted} PDFs saved so far)")
                 print("")
                 return
-            throttle_if_needed(config)
+            throttle_if_needed(config, cancel)
             subfolders = sorted(
                 [f for f in folder.iterdir() if f.is_dir()],
                 key=lambda x: natural_sort_key(x.name)
@@ -449,11 +518,15 @@ def images_to_pdf(config, cancel=None):
         if raw == SENTINEL:
             return _cancel()
         mode = "reorder & combine" if raw == "2" else "combine"
-    else:
-        print(f"  Mode: {mode}")
+    print(f"  Mode: {mode}")
 
     if mode == "reorder & combine":
-        print(f"  Enter file indices (1–{len(image_files)}) separated by commas.")
+        start_section, end_section = _get_log_section_fns()
+        start_section(f"  File numbers ({len(image_files)}) - expand to see which number is which file")
+        for n, f in enumerate(image_files, 1):
+            print(f"    {n}. {f.relative_to(src)}")
+        end_section()
+        print(f"  Enter file numbers (1–{len(image_files)}) separated by commas.")
         print(f"  Leave blank to use all files in default order.")
         raw = input("Order: ").strip()
         if raw == SENTINEL:
@@ -535,15 +608,14 @@ def folder_renamer(config, cancel=None):
         return
 
     print(f"  Found {len(folders)} folder(s).")
-    print("  Modes: 1=Prefix  2=Suffix  3=Replace  4=Extract Number")
     mode = config.get("default_folder_renamer_mode", "ask")
     if mode == "ask":
+        print("  Modes: 1=Prefix  2=Suffix  3=Replace  4=Extract Number")
         mode = input("Choose mode (1-4, default 4): ").strip() or "4"
         if mode == SENTINEL:
             return _cancel()
         mode = {"1": "prefix", "2": "suffix", "3": "replace", "4": "extract number"}.get(mode, mode)
-    else:
-        print(f"  Mode: {mode}")
+    print(f"  Mode: {mode}")
 
     preview = []
     skipped = []
@@ -564,6 +636,10 @@ def folder_renamer(config, cancel=None):
         param1 = input("Find: ")
         if param1 == SENTINEL:
             return _cancel()
+        if not param1:
+            print("  'Find' can't be empty.")
+            print("")
+            return
         param2 = input("Replace with (Enter for blank): ")
         if param2 == SENTINEL:
             return _cancel()
@@ -593,6 +669,7 @@ def folder_renamer(config, cancel=None):
         return
 
     print(f"  {len(preview)} folder(s) to rename{f', {len(skipped)} skipped' if skipped else ''}.")
+    _warn_name_collisions(preview)
     start_section, end_section = _get_log_section_fns()
     start_section(f"  Preview ({len(preview)})")
     for old, new in preview:
@@ -654,15 +731,14 @@ def file_renamer(config, cancel=None):
         return
 
     print(f"  Found {len(items)} file(s).")
-    print("  Modes: 1=Prefix  2=Suffix  3=Replace  4=Sequence")
     mode = config.get("default_file_renamer_mode", "ask")
     if mode == "ask":
+        print("  Modes: 1=Prefix  2=Suffix  3=Replace  4=Sequence")
         mode = input("Choose mode (1-4): ").strip()
         if mode == SENTINEL:
             return _cancel()
         mode = {"1": "prefix", "2": "suffix", "3": "replace", "4": "sequence"}.get(mode, mode)
-    else:
-        print(f"  Mode: {mode}")
+    print(f"  Mode: {mode}")
 
     if mode == "prefix":
         param1 = input("Prefix to add: ")
@@ -678,6 +754,10 @@ def file_renamer(config, cancel=None):
         param1 = input("Find: ")
         if param1 == SENTINEL:
             return _cancel()
+        if not param1:
+            print("  'Find' can't be empty.")
+            print("")
+            return
         param2 = input("Replace with (Enter for blank): ")
         if param2 == SENTINEL:
             return _cancel()
@@ -692,8 +772,13 @@ def file_renamer(config, cancel=None):
         pad = input("Pad digits (default 3): ").strip()
         if pad == SENTINEL:
             return _cancel()
-        start = int(start) if start else 1
-        pad   = int(pad)   if pad   else 3
+        try:
+            start = int(start) if start else 1
+            pad   = int(pad)   if pad   else 3
+        except ValueError:
+            print("  Start number and pad digits must be whole numbers.")
+            print("")
+            return
         def _seq_name(base, i, ext):
             num = str(start + i).zfill(pad)
             return f"{base}{num}{ext}" if base else f"{num}{ext}"
@@ -704,6 +789,7 @@ def file_renamer(config, cancel=None):
         print("")
         return
 
+    _warn_name_collisions(preview)
     start_section, end_section = _get_log_section_fns()
     start_section(f"  Preview ({len(preview)})")
     for old, new in preview:
@@ -791,7 +877,7 @@ def combine_image_sets(config, cancel=None):
             print(f"  Cancelled. ({counter - 1} images combined so far)")
             print("")
             return
-        throttle_if_needed(config)
+        throttle_if_needed(config, cancel)
         subfolders = sorted([f for f in folder.iterdir() if f.is_dir()],
                             key=lambda x: natural_sort_key(x.name)) if use_sort else [f for f in folder.iterdir() if f.is_dir()]
         targets = [(f"{sub.name}", sub) for sub in subfolders] if subfolders else [(folder.name, folder)]
@@ -840,12 +926,16 @@ def image_converter(config, cancel=None):
 
     fmt = config.get("default_img_fmt", "ask")
     if fmt == "ask":
-        fmt = input("Format (jpg/png/bmp/tiff, default jpg): ").strip().lower()
-        if fmt == SENTINEL:
+        raw = input("Format (jpg/png/webp/bmp/tiff, default jpg): ").strip()
+        if raw == SENTINEL:                      # must be checked BEFORE .lower(), which changes the text
             return _cancel()
-        fmt = fmt or "jpg"
-    else:
-        print(f"  Format: {fmt}")
+        fmt = raw.lower() or "jpg"
+    fmt = {"jpeg": "jpg", "tif": "tiff"}.get(fmt, fmt)
+    if fmt not in ("jpg", "png", "webp", "bmp", "tiff"):
+        print(f"  Unknown format '{fmt}'. Choose jpg, png, webp, bmp or tiff.")
+        print("")
+        return
+    print(f"  Format: {fmt}")
 
     pillow_fmt = "JPEG" if fmt == "jpg" else fmt.upper()
     ext        = ".jpg" if fmt == "jpg" else f".{fmt}"
@@ -855,7 +945,7 @@ def image_converter(config, cancel=None):
     if not _check_disk_space(out, config):
         return
 
-    converter_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'}
+    converter_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.webp'}
     """MORE FILE FORMATS ARE ALLOWED. IMAGE CONVERTER IS MEANT TO TURN UN-IDEAL FILES INTER BETTER ONES"""
     all_files = list(src.rglob("*"))
     images = []
@@ -893,7 +983,7 @@ def image_converter(config, cancel=None):
             print(f"  Cancelled. ({converted + copied} images processed so far)")
             print("")
             return
-        throttle_if_needed(config)
+        throttle_if_needed(config, cancel)
         dest_dir = out / img_path.relative_to(src).parent
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / (img_path.stem + ext)
@@ -1046,12 +1136,11 @@ def find_duplicates(config, cancel=None):
 
     mode = config.get("default_dedupe_mode", "ask")
     if mode == "ask":
-        mode = input("Mode? 1=Keep one of each (default)  2=Remove all instances: ").strip()
+        mode = input("Mode? 1=Keep one of each (default)  2=Remove all instances: ").strip() or "1"
         if mode == SENTINEL:
             return _cancel()
         mode = {"1": "keep one copy", "2": "delete all"}.get(mode, mode)
-    else:
-        print(f"  Mode: {mode}")
+    print(f"  Mode: {mode}")
 
     if mode == "delete all":
         exclude = {f for g in dup_groups for f in g}
@@ -1148,7 +1237,7 @@ def pdf_combiner(config, cancel=None):
             print(f"  Cancelled. ({total_pages} pages combined so far)")
             print("")
             return
-        throttle_if_needed(config)
+        throttle_if_needed(config, cancel)
         try:
             reader = PdfReader(str(pdf_path))
             for page in reader.pages:
@@ -1198,25 +1287,32 @@ def pdf_to_images(config, cancel=None):
 
     fmt = config.get("default_pdf_to_images_fmt", "ask")
     if fmt == "ask":
-        raw = input("Format (jpg/png, default jpg): ").strip().lower()
-        if raw == SENTINEL:
+        raw = input("Format (jpg/png, default jpg): ").strip()
+        if raw == SENTINEL:                      # must be checked BEFORE .lower(), which changes the text
             return _cancel()
-        fmt = raw or "jpg"
-    else:
-        print(f"  Format: {fmt}")
+        fmt = raw.lower() or "jpg"
+    fmt = {"jpeg": "jpg"}.get(fmt, fmt)
     if fmt not in ("jpg", "png"):
-        print("  Invalid format.")
+        print(f"  Invalid format '{fmt}'. Choose jpg or png.")
         print("")
         return
+    print(f"  Format: {fmt}")
 
     dpi = config.get("default_dpi", "ask")
     if dpi == "ask":
         raw = input("DPI (default 72): ").strip()
         if raw == SENTINEL:
             return _cancel()
-        dpi = int(raw) if raw else 72
-    else:
-        print(f"  DPI: {dpi}")
+        dpi = raw or "72"
+    try:
+        dpi = int(dpi)
+        if not 10 <= dpi <= 1200:
+            raise ValueError
+    except (TypeError, ValueError):
+        print(f"  Invalid DPI '{dpi}'. Enter a whole number between 10 and 1200.")
+        print("")
+        return
+    print(f"  DPI: {dpi}")
 
     out = get_output(config, "pdf to images", run_name)
     print(f"  Output: {out}")
@@ -1254,6 +1350,7 @@ def pdf_to_images(config, cancel=None):
             pass
 
     print(f"  Found {len(pdfs)} PDF(s), {total_page_count} pages total.")
+    print(f"  Note: cancelling will stop after the current page finishes.")
     total_pages = 0
     failed = []
     for pdf_path in pdfs:
@@ -1264,7 +1361,6 @@ def pdf_to_images(config, cancel=None):
         pdf_out = out / pdf_path.stem
         pdf_out.mkdir(exist_ok=True)
         print(f"  Converting: {pdf_path.name}  (@ {dpi} DPI)...")
-        print(f"  Note: cancelling will stop after the current page finishes.")
         try:
             page_count = len(PdfReader(str(pdf_path)).pages)
         except Exception as e:
@@ -1275,7 +1371,7 @@ def pdf_to_images(config, cancel=None):
                 print(f"  Cancelled. ({total_pages + i} pages exported so far)")
                 print("")
                 return
-            throttle_if_needed(config)
+            throttle_if_needed(config, cancel)
             try:
                 pages = convert_from_path(str(pdf_path), dpi=dpi, first_page=i + 1, last_page=i + 1, poppler_path=_POPPLER_PATH)
                 dest = pdf_out / f"{pdf_path.stem}_{str(i + 1).zfill(4)}.{fmt}"
@@ -1314,7 +1410,6 @@ def pdf_splitter(config, cancel=None):
     print(f"  Output: {out}")
     if not _check_disk_space(out, config):
         return
-    print(f"  Note: cannot be cancelled once PDF conversion starts.")
 
     use_sort = resolve_sort(config)
     print(f"  Sort: {'natural' if use_sort else 'none'}")
@@ -1341,8 +1436,8 @@ def pdf_splitter(config, cancel=None):
     total = len(reader.pages)
     print(f"  Loaded: {pdf_path.name}  ({total} pages)")
 
-    print(f" Enter page ranges separated by commas (e.g. 1-7, 12-13, 27-3 ).")
-    print("  Printing from 1-7 would print in combine in order and 7-1 would combine backwards")
+    print("  Enter page ranges separated by commas, e.g. 1-7, 12-13, 27-20")
+    print("  Each range becomes its own PDF. 1-7 keeps page order; 7-1 reverses it.")
     raw = input("Ranges: ").strip()
     if raw == SENTINEL:
         return _cancel()
@@ -1422,7 +1517,7 @@ def pdf_splitter(config, cancel=None):
 
 def status(config):
     src = get_input(config)
-    out_base = Path(config["output"]) / "output"
+    out_base = Path(config.get("output", "")) / "output"
 
     start_section, end_section = _get_log_section_fns()
 
