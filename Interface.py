@@ -1,27 +1,28 @@
 #IMPORTS——————————————————————————————————————————————————————————————————————————————————————————————————
 import tkinter as tk
-from tkinter import scrolledtext, filedialog
+from tkinter import scrolledtext, filedialog, messagebox
 from pathlib import Path
+from datetime import datetime
 import threading
 import queue
 import sys
 import shutil
+import time
+import traceback
 import webbrowser
-import functools
 
 #IMPORT FROM MANAGER——————————————————————————————————————————————————————————————————————————————————————
 from Manager import (
     load_config, save_config, get_input,
     folders_to_pdf, images_to_pdf, folder_renamer, file_renamer,
     combine_image_sets, image_converter, pdf_splitter, pdf_combiner,
-    pdf_to_images, status, find_duplicates, DEFAULTS, SENTINEL
+    pdf_to_images, status, find_duplicates, DEFAULTS, SENTINEL, take_config_warning
 )
 
 #IMPORT FROM LOG, PREFERENCES AND THEMES—————————————————————————————————————————————————————————————————
-from Log import LogRedirect, input_queue, result_queue, thread_safe_input, patch_input
+from Log import LogRedirect, input_queue, thread_safe_input, patch_input, EXPAND, COLLAPSE
 from Preferences import show_preferences
 from Themes import THEMES
-
 #INPUT QUEUE——————————————————————————————————————————————————————————————————————————————————————————————
 
 
@@ -39,25 +40,44 @@ class App:
         self.root.title("Tankobon")
         self.root.resizable(True, True)
         self.config = load_config()
+        self._migrate_legacy_theme_colors()
         self.cancel_event = threading.Event()
+        self._jobs_lock = threading.Lock()          # _running_jobs is touched by several threads
         self._running_jobs = {}
+        self._jobs_changed = threading.Event()      # set by worker threads, handled in _tick()
+        self._main_calls = queue.SimpleQueue()      # things worker threads want the main thread to do
+        self._pending_reply = None                  # the question currently shown in the log, if any
+        self._input_frame = None
+        self._tooltip = None
+        self._help_win = None
+        self._docs_win = None
+        self._status_running = False
+        self._closing = False
         self._open_accordion = {}
         self._dark = self.config.get("dark_mode", False)
         self._btn_labels = {}
         self._suboption_labels = {}
         self._last_input_count = -1
+        self._last_count_check = 0.0
         self._moon_image = self._load_moon_icon()
         patch_input()
         self._build_ui()
         self._apply_theme()
-        sys.stdout = LogRedirect(self.log, self)
-        sys.stderr = LogRedirect(self.log, self)
-        self._poll_input()
+        # ONE shared log writer for stdout and stderr, so their lines stay in order.
+        self._log_redirect = LogRedirect(self.log, self)
+        sys.stdout = self._log_redirect
+        sys.stderr = self._log_redirect
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        warning = take_config_warning()
+        if warning:
+            print(warning)
+        if not (self.config.get("input") and self.config.get("output")):
+            print("Welcome! First set your Input and Output folders: click ≡ (top left), then Paths.")
+        self._tick()
         if self.config.get("first_launch", True):
             self.config["first_launch"] = False
             save_config(self.config)
             self.root.after(500, self._show_help)
-        self._status_running = False
 
     TOOL_OPTIONS = {
         "Folders to PDF":     ["combine", "individual"],
@@ -119,22 +139,22 @@ class App:
     ]
 
     TOOLTIPS = {
-        "Folders to PDF":     "Combines all folders in Input into a single PDF. Each folder is treated as a chapter.",
+        "Folders to PDF":     "Turns the image folders in Input into PDFs: one combined PDF, or one PDF per folder.",
         "Images to PDF":      "Converts all images in Input into a single PDF.",
-        "Folder Renamer":     "Renames folders by extracting the number from their name. Useful for sorting chapters.",
-        "File Renamer":       "Renames files by prefix, suffix, find/replace, or sequence numbering.",
+        "Folder Renamer":     "Renames folders: add a prefix or suffix, find & replace, or keep just the number (handy for sorting chapters). Renamed copies go to Output.",
+        "File Renamer":       "Renames files by prefix, suffix, find/replace, or sequence numbering. Renamed copies go to Output.",
         "Combine Image Sets": "Merges multiple folders of images into one flat folder, preserving order.",
         "Image Converter":    "Converts all images in Input to a chosen format (jpg, png, webp, etc).",
-        "Find Duplicates":    "Finds and optionally deletes exact duplicate images by file hash.",
+        "Find Duplicates":    "Finds duplicate images (exact, or look-alike: set in Preferences > Tools) and copies the rest to Output. Nothing in Input is changed.",
         "PDF Combiner":       "Combines multiple PDFs into one.",
         "PDF Splitter":       "Splits a PDF into parts at page numbers you specify.",
         "PDF to Images":      "Converts a PDF into individual image files. Resource intensive.",
         "Add Input":          "Copies files or a folder into the Input directory for processing.",
-        "Clear Input":        "Deletes everything in the Input folder. Originals are not affected.",
+        "Clear Input":        "Deletes everything in the Input folder (asks first). Your original files are not affected.",
         "Status":             "Shows what is currently in the Input and Output folders.",
         "Clear Log":          "Clears the log display.",
-        "Clear Output":       "Deletes everything in the Output folder.",
-        "Cancel Operation":         "Cancels the currently running job.",
+        "Clear Output":       "Deletes everything in the Output folder (asks first).",
+        "Cancel Operation":   "Stops the running job at its next safe point. PDF writing itself cannot be interrupted.",
         "Open Input":         "Opens the input folder in Finder/Explorer.",
         "Open Output":        "Opens the output folder in Finder/Explorer and prints the path to the log.",
     }
@@ -146,6 +166,25 @@ class App:
         hardcoded = THEMES[base]
         custom = self.config.get("themes", {}).get(base, {})
         return {**hardcoded, **custom}
+
+    def _migrate_legacy_theme_colors(self):
+        """Older versions saved EVERY colour into config.json the first time Preferences was saved,
+        which froze the old default colours in place. Drop saved values that are identical to a built-in
+        default (old or new) so the current defaults apply. Real customisations are kept."""
+        themes = self.config.get("themes")
+        if not isinstance(themes, dict):
+            return
+        changed = False
+        for mode, saved in themes.items():
+            if mode not in THEMES or not isinstance(saved, dict):
+                continue
+            for key in list(saved):
+                val = str(saved[key]).lower()
+                if val == THEMES[mode].get(key, "").lower():
+                    del saved[key]
+                    changed = True
+        if changed:
+            save_config(self.config)
 
     def _load_moon_icon(self):
         try:
@@ -166,7 +205,7 @@ class App:
         for tag in self.log.tag_names():
             if tag.startswith("section_"):
                 self.log.tag_configure(tag, foreground=t["log_fg"])
-            elif tag in ("ts_dim",) or tag.startswith("log_dim"):
+            elif tag in ("ts_dim",) or tag.startswith(("log_dim", "preview_")):
                 self.log.tag_configure(tag, foreground=t["log_dim"])
             elif tag.startswith("log_error"):
                 self.log.tag_configure(tag, foreground=t["log_error"])
@@ -221,6 +260,8 @@ class App:
 
     def _get_input_count(self):
         try:
+            if not self.config.get("input"):
+                return 0
             input_dir = get_input(self.config)
             if not input_dir.exists():
                 return 0
@@ -260,13 +301,7 @@ class App:
                 except tk.TclError:
                     pass
 
-    def _poll_input(self):
-        try:
-            prompt = input_queue.get_nowait()
-            self._show_inline_input(prompt)
-        except queue.Empty:
-            pass
-
+    def _refresh_input_count(self):
         count = self._get_input_count()
         if count != self._last_input_count:
             self._last_input_count = count
@@ -277,15 +312,66 @@ class App:
                 pass
             self._update_button_states()
 
-        self.root.after(50, self._poll_input)
+    def _call_in_main(self, fn):
+        """Worker threads use this to ask the main thread to run something (e.g. open a file dialog)."""
+        self._main_calls.put(fn)
+
+    def _tick(self):
+        """Runs about 40 times a second on the main thread. Everything worker threads want drawn or asked
+        happens here, because Tkinter must only be used from the main thread."""
+        if self._closing:
+            return
+        try:
+            self._log_redirect.drain()
+
+            while True:
+                try:
+                    call = self._main_calls.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    call()
+                except Exception:
+                    traceback.print_exc()
+
+            if self._pending_reply is None:          # only ONE question on screen at a time
+                try:
+                    prompt, reply = input_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                else:
+                    try:
+                        self._show_inline_input(prompt, reply)
+                    except Exception:
+                        traceback.print_exc()
+                        self._pending_reply = None
+                        reply.put(SENTINEL)          # never leave a job waiting forever
+
+            if self._jobs_changed.is_set():
+                self._jobs_changed.clear()
+                self._update_status_label()
+                self._last_count_check = 0.0         # re-count Input right after a job ends
+
+            now = time.monotonic()
+            if now - self._last_count_check >= 1.0:  # looking at the disk once a second is plenty
+                self._last_count_check = now
+                self._refresh_input_count()
+        except tk.TclError:
+            pass                                      # window is being destroyed
+        if not self._closing:
+            self.root.after(25, self._tick)
+
+    def _on_close(self):
+        self._closing = True
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+        self.root.destroy()
 
     # ── inline input ──────────────────────────────────────────────────────────
 
-    def _show_inline_input(self, prompt):
-        if hasattr(self, '_input_frame') and self._input_frame.winfo_exists():
-            return
-
+    def _show_inline_input(self, prompt, reply):
         t = self._theme()
+        self._pending_reply = reply
         self._input_frame = tk.Frame(self._right, bg=t["bg"])
         self._input_frame.pack(fill='x', pady=(4, 0))
 
@@ -311,39 +397,53 @@ class App:
         entry.pack(side='left', fill='x', expand=True, padx=4)
         entry.focus_set()
 
+        # Every handler returns "break" so the key press is not ALSO typed into the box.
         if is_pick:
             def pick_files(e=None):
-                self._input_frame.destroy()
-                result_queue.put("FILES")
+                self._finish_input("FILES")
+                return "break"
             def pick_folder(e=None):
-                self._input_frame.destroy()
-                result_queue.put("FOLDER")
+                self._finish_input("FOLDER")
+                return "break"
             def cancel(e=None):
-                self._input_frame.destroy()
-                result_queue.put("CANCEL")
+                self._finish_input(SENTINEL)
+                return "break"
             entry.bind("<Return>", pick_files)
             entry.bind("<space>",  pick_folder)
             entry.bind("<Escape>", cancel)
         else:
-            continue_key = self.config.get("hotkey_continue", "Return")
-            cancel_key   = self.config.get("hotkey_cancel", "Escape")
-
             def confirm(e=None):
-                val = var.get()
-                self._input_frame.destroy()
-                result_queue.put(val)
+                self._finish_input(var.get())
+                return "break"
 
             def cancel(e=None):
-                self._input_frame.destroy()
-                result_queue.put(SENTINEL)
+                self._finish_input(SENTINEL)
+                return "break"
 
             entry.bind(f"<{continue_key}>", confirm)
             entry.bind(f"<{cancel_key}>",   cancel)
 
+    def _finish_input(self, value):
+        """Close the question box and hand the answer to the job that asked."""
+        reply, self._pending_reply = self._pending_reply, None
+        if self._input_frame is not None:
+            try:
+                self._input_frame.destroy()
+            except tk.TclError:
+                pass
+            self._input_frame = None
+        if reply is not None:
+            reply.put(value)
+
     # ── help / docs ───────────────────────────────────────────────────────────
 
     def _show_help(self):
+        if self._help_win is not None and self._help_win.winfo_exists():
+            self._help_win.lift()
+            self._help_win.focus_force()
+            return
         win = tk.Toplevel(self.root)
+        self._help_win = win
         win.title("Help")
         win.geometry("600x620")
         win.resizable(False, False)
@@ -396,7 +496,12 @@ class App:
         text.configure(state='disabled')
 
     def _show_docs(self):
+        if self._docs_win is not None and self._docs_win.winfo_exists():
+            self._docs_win.lift()
+            self._docs_win.focus_force()
+            return
         win = tk.Toplevel(self.root)
+        self._docs_win = win
         win.title("Documentation")
         win.geometry("600x620")
         win.resizable(False, False)
@@ -416,7 +521,7 @@ class App:
         text.configure(state='normal')
         text.insert(tk.END, "Tankobon\n\n")
         text.insert(tk.END,
-                    "Tankobon is a file manager. It's an open source project that specializes in managing image files in bulk. Its under the AGPL license\n\n")
+                    "Tankobon is a file manager. It's an open source project that specializes in managing image files in bulk. It's under the AGPL license.\n\n")
         text.insert(tk.END, "Github:\n")
         insert_link("https://github.com/siyoungpark18-oss/Tankobon")
         text.insert(tk.END, "\n\nMacOS .dmg:\n")
@@ -429,35 +534,48 @@ class App:
 
     # ── tooltips ──────────────────────────────────────────────────────────────
 
-    def _show_tooltip(self, widget, text):
-        def on_enter(e):
-            t = self._theme()
-            x = widget.winfo_rootx() - self.root.winfo_rootx() + widget.winfo_width() + 4
-            y = widget.winfo_rooty() - self.root.winfo_rooty()
-            self._tooltip = tk.Label(self.root, text=text, wraplength=220,
-                                     justify='left', font=('Courier', 7),
-                                     bg=t["bg"], fg=t["fg"], padx=6, pady=4)
-            self._tooltip.place(x=x, y=y)
-            self._tooltip.lift()
-
-        def on_leave(e):
-            if hasattr(self, '_tooltip') and self._tooltip:
+    def _hide_tooltip(self):
+        if self._tooltip is not None:
+            try:
                 self._tooltip.destroy()
-                self._tooltip = None
+            except tk.TclError:
+                pass
+            self._tooltip = None
 
-        widget.bind("<Enter>", on_enter)
-        widget.bind("<Leave>", on_leave)
-
-    def _show_tooltip_popup(self, widget, text, force_light=False):
-        if hasattr(self, '_tooltip') and self._tooltip:
-            self._tooltip.destroy()
+    def _place_tooltip(self, widget, text, wrap=0, below=False, force_light=False):
+        """Show a tooltip next to `widget`, always fully inside the window."""
+        self._hide_tooltip()
         t = THEMES["light"] if force_light else self._theme()
-        x = widget.winfo_rootx() - self.root.winfo_rootx() + widget.winfo_width() + 4
+        tip = tk.Label(self.root, text=text, wraplength=wrap, justify='left',
+                       font=('Courier', 7), bg=t["bg"], fg=t["fg"], padx=6, pady=4)
+        tip.update_idletasks()
+        x = widget.winfo_rootx() - self.root.winfo_rootx()
         y = widget.winfo_rooty() - self.root.winfo_rooty()
-        self._tooltip = tk.Label(self.root, text=text, font=('Courier', 7),
-                                 bg=t["bg"], fg=t["fg"], padx=6, pady=4)
-        self._tooltip.place(x=x, y=y)
-        self._tooltip.lift()
+        if below:
+            y += widget.winfo_height() + 2
+        else:
+            x += widget.winfo_width() + 4
+        x = max(0, min(x, self.root.winfo_width()  - tip.winfo_reqwidth()  - 4))
+        y = max(0, min(y, self.root.winfo_height() - tip.winfo_reqheight() - 4))
+        tip.place(x=x, y=y)
+        tip.lift()
+        self._tooltip = tip
+
+    def _show_tooltip(self, widget, text):
+        # add="+" keeps the hover highlight that was bound to the same events before.
+        widget.bind("<Enter>", lambda e: self._place_tooltip(widget, text, wrap=220), add="+")
+        widget.bind("<Leave>", lambda e: self._hide_tooltip(), add="+")
+
+    def _show_tooltip_popup(self, widget, text, force_light=False, below=False):
+        self._place_tooltip(widget, text, below=below, force_light=force_light)
+
+    def _tool_tip_text(self, label, has_default):
+        text = self.TOOLTIPS[label]
+        if has_default:
+            mode = self.config.get(self.TOOL_MODE_CONFIG_KEY[label])
+            text += (f"\n\nRuns with your default: {self.OPTION_LABELS.get(mode, mode)}."
+                     f"\nChange it in Preferences (≡) > Tools.")
+        return text
 
     # ── ui build ──────────────────────────────────────────────────────────────
 
@@ -546,13 +664,16 @@ class App:
             self.config["log_font_size"] = self._log_font_size
             save_config(self.config)
 
-        for symbol, delta in (('+', 1), ('-', -1)):
+        for symbol, delta, tip in (('+', 1, "Larger log text"), ('-', -1, "Smaller log text")):
             btn = tk.Label(log_header, text=symbol, font=('', 7, 'bold'),
                            bg=t["bg"], fg=t["fg"], padx=6, cursor="hand2")
             btn.pack(side='right', padx=(2, 0))
             btn.bind("<Button-1>", lambda e, d=delta: _change_font(d))
-            btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=self._theme()["hover"]))
-            btn.bind("<Leave>", lambda e, b=btn: b.configure(bg=self._theme()["bg"]))
+            btn.bind("<Enter>", lambda e, b=btn, tp=tip: (
+                b.configure(bg=self._theme()["hover"]),
+                self._show_tooltip_popup(b, tp, below=True)))
+            btn.bind("<Leave>", lambda e, b=btn: (
+                b.configure(bg=self._theme()["bg"]), self._hide_tooltip()))
 
         log_frame = tk.Frame(self._right)
         log_frame.pack(fill='both', expand=True)
@@ -688,6 +809,8 @@ class App:
     def _make_tool_accordion(self, parent, label, run_fn):
         t = self._theme()
         options = self.TOOL_OPTIONS.get(label, [])
+        config_key  = self.TOOL_MODE_CONFIG_KEY.get(label)
+        has_default = (config_key is not None and self.config.get(config_key, "ask") != "ask")
 
         outer   = tk.Frame(parent, bg=t["bg"])
         outer.pack(fill='x', pady=1)
@@ -708,13 +831,13 @@ class App:
             info.pack(side='left', padx=(3, 0))
             info.bind("<Enter>", lambda e: info.configure(bg=self._theme()["hover"]))
             info.bind("<Leave>", lambda e: info.configure(bg=self._theme()["bg"]))
-            self._show_tooltip(info, self.TOOLTIPS[label])
+            self._show_tooltip(info, self._tool_tip_text(label, has_default))
 
         body  = tk.Frame(outer, bg=t["bg"])
         state = {"open": False}
 
         def _update_label(is_open, lbl=hdr_lbl, lbl_text=label):
-            lbl.configure(text=("▼ " if is_open else "▶ ") + lbl_text)
+            lbl.configure(text=(COLLAPSE if is_open else EXPAND) + " " + lbl_text)
 
         _update_label(False)
 
@@ -739,9 +862,6 @@ class App:
             state["open"] = False
 
         self._open_accordion[label] = {"open": False, "close": close_fn}
-
-        config_key  = self.TOOL_MODE_CONFIG_KEY.get(label)
-        has_default = (config_key is not None and self.config.get(config_key, "ask") != "ask")
 
         if not options or has_default:
             hdr_lbl.configure(text=label)
@@ -792,134 +912,187 @@ class App:
 
     # ── job running ───────────────────────────────────────────────────────────
 
-    @functools.cached_property
-    def _tool_fns(self):
-        return {
-            "Folders to PDF":     lambda: folders_to_pdf(self.config, self.cancel_event),
-            "Images to PDF":      lambda: images_to_pdf(self.config, self.cancel_event),
-            "Folder Renamer":     lambda: folder_renamer(self.config, self.cancel_event),
-            "File Renamer":       lambda: file_renamer(self.config, self.cancel_event),
-            "Combine Image Sets": lambda: combine_image_sets(self.config, self.cancel_event),
-            "Image Converter":    lambda: image_converter(self.config, self.cancel_event),
-            "Find Duplicates":    lambda: find_duplicates(self.config, self.cancel_event),
-            "PDF Combiner":       lambda: pdf_combiner(self.config, self.cancel_event),
-            "PDF Splitter":       lambda: pdf_splitter(self.config, self.cancel_event),
-            "PDF to Images":      lambda: pdf_to_images(self.config, self.cancel_event),
-            "Add Input":          lambda: self.pick_files(),
-        }
+    TOOL_FUNCS = {
+        "Folders to PDF":     folders_to_pdf,
+        "Images to PDF":      images_to_pdf,
+        "Folder Renamer":     folder_renamer,
+        "File Renamer":       file_renamer,
+        "Combine Image Sets": combine_image_sets,
+        "Image Converter":    image_converter,
+        "Find Duplicates":    find_duplicates,
+        "PDF Combiner":       pdf_combiner,
+        "PDF Splitter":       pdf_splitter,
+        "PDF to Images":      pdf_to_images,
+    }
+
+    # Which folders must be set before a job can run (everything else needs both).
+    JOB_NEEDS = {"Add Input": ("input",), "Clear Input": ("input",), "Clear Output": ("output",)}
+
+    def _path_problem(self, *needs):
+        """Returns a message if a required folder is not set or has disappeared, else None."""
+        for key in needs:
+            val = self.config.get(key, "")
+            if not val:
+                return f"  The {key} folder is not set. Click ≡, then Paths, and choose one."
+            if not Path(val).is_dir():
+                return (f"  The {key} folder no longer exists: {val}\n"
+                        f"  Click ≡, then Paths, and choose another.")
+        return None
+
+    def _busy_jobs(self):
+        with self._jobs_lock:
+            return [n for n in self._running_jobs if n != "Status"]
 
     def _inject_and_run(self, run_fn, choice, job_name):
-        tool_fns = self._tool_fns
-        direct_fn = tool_fns.get(job_name)
-        if direct_fn is None:
-            self._run(run_fn, job_name=job_name)
-            return
-
         if job_name == "Add Input":
             self._run(lambda c=choice: self._pick_files_work(c), job_name=job_name)
             return
 
-        config_key = self.TOOL_MODE_CONFIG_KEY.get(job_name) if choice is not None else None
+        tool = self.TOOL_FUNCS.get(job_name)
+        if tool is None:
+            self._run(run_fn, job_name=job_name)
+            return
 
-        if config_key:
-            original    = self.config.get(config_key)
-            self.config[config_key] = choice
-            fn_snapshot = tool_fns[job_name]
-
-            def run_with_restore():
-                try:
-                    fn_snapshot()
-                finally:
-                    self.config[config_key] = original
-
-            self._run(run_with_restore, job_name=job_name)
-        else:
-            self._run(direct_fn, job_name=job_name)
+        # The tool gets its OWN copy of the settings with the chosen option filled in.
+        # The real settings (self.config) are never touched, so nothing can leak into config.json.
+        cfg = dict(self.config)
+        config_key = self.TOOL_MODE_CONFIG_KEY.get(job_name)
+        if choice is not None and config_key:
+            cfg[config_key] = choice
+        self._run(lambda: tool(cfg, self.cancel_event), job_name=job_name)
 
     def _run(self, fn, ignore_lock=False, job_name="Job"):
-        if self._running_jobs and not ignore_lock:
-            if not self.config.get("allow_concurrent_jobs", False):
-                print("  A job is already running. Wait for it to finish or cancel it first.")
-                return
-            if job_name in self._running_jobs:
-                print(f"  {job_name} is already running.")
-                return
-        self.cancel_event.clear()
+        problem = self._path_problem(*self.JOB_NEEDS.get(job_name, ("input", "output")))
+        if problem:
+            print(problem)
+            return
+
+        with self._jobs_lock:
+            busy = [n for n in self._running_jobs if n != "Status"]
+            refusal = None
+            if busy and not ignore_lock:
+                if not self.config.get("allow_concurrent_jobs", False):
+                    refusal = "  A job is already running. Wait for it to finish or cancel it first."
+                elif job_name in self._running_jobs:
+                    refusal = f"  {job_name} is already running."
+            if refusal is None:
+                if not busy:
+                    # Only reset Cancel when nothing else is running, otherwise starting
+                    # (or clicking Status) would silently undo the user's Cancel.
+                    self.cancel_event.clear()
+                self._running_jobs[job_name] = self._running_jobs.get(job_name, 0) + 1
+        if refusal:
+            print(refusal)
+            return
 
         if job_name != "Add Input" and self.config.get("show_timestamps", True):
-            from datetime import datetime
-            font_size = self._log_font_size
-            line_len = max(10, int(55 - (font_size - 7) * 2.5))
+            line_len = max(10, int(55 - (self._log_font_size - 7) * 2.5))
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self.log.configure(state='normal')
-            self.log.tag_configure("ts_dim", foreground=self._theme()["log_dim"])
             prefix = "\n" if self.config.get("log_blank_lines", False) else ""
-            self.log.insert(tk.END, f"{prefix}{timestamp}\n{'─' * line_len}\n\n", ("ts_dim",))
-            self.log.see(tk.END)
-            self.log.configure(state='disabled')
+            self._log_redirect.header(f"{prefix}{timestamp}\n{'─' * line_len}\n\n")
 
-        self._running_jobs[job_name] = self._running_jobs.get(job_name, 0) + 1
         self._update_status_label()
 
         def wrapper():
             try:
                 fn()
+            except Exception as e:
+                self._report_job_error(job_name, e)
             finally:
-                count = self._running_jobs.get(job_name, 1) - 1
-                if count <= 0:
-                    self._running_jobs.pop(job_name, None)
-                else:
-                    self._running_jobs[job_name] = count
-                self.root.after(0, self._update_status_label)
+                with self._jobs_lock:
+                    count = self._running_jobs.get(job_name, 1) - 1
+                    if count <= 0:
+                        self._running_jobs.pop(job_name, None)
+                    else:
+                        self._running_jobs[job_name] = count
+                self._jobs_changed.set()      # the main thread updates the label and Input count
 
         threading.Thread(target=wrapper, daemon=True).start()
 
+    def _report_job_error(self, job_name, error):
+        """A tool crashed: show a short readable message, and keep the technical traceback collapsed."""
+        log = sys.stdout
+        if hasattr(log, "end_section"):
+            log.end_section()                 # a crash can leave a section open, which would hide this message
+        print(f"  ✖ {job_name} stopped because of an error: {error}")
+        if hasattr(log, "start_section"):
+            log.start_section("  Error details (include this if you report a bug)")
+            for line in traceback.format_exc().rstrip().splitlines():
+                print("    " + line)
+            log.end_section()
+        print("")
+
     def cancel_job(self):
-        if not self._running_jobs:
+        if self._pending_reply is not None:
+            # A job is waiting for an answer: closing the question cancels it, the job reports "Cancelled."
+            self._finish_input(SENTINEL)
+            return
+        if not self._busy_jobs():
             print("  No job is running.")
             return
         self.cancel_event.set()
-        print("  Cancelling...")
+        print("  Cancel requested. Jobs stop at their next safe point (PDF writing can't be interrupted).")
 
     def _update_status_label(self):
-        if not self._running_jobs:
+        with self._jobs_lock:
+            jobs = dict(self._running_jobs)
+        if not jobs:
             self._status_lbl.configure(text="")
         else:
             names = []
-            for name, count in self._running_jobs.items():
+            for name, count in jobs.items():
                 names.append(f"{name}" if count == 1 else f"{name} ×{count}")
             self._status_lbl.configure(text="● " + "  |  ".join(names))
 
     # ── utility actions ───────────────────────────────────────────────────────
 
     def clear_log(self):
-        self.log.configure(state='normal')
-        self.log.delete('1.0', tk.END)
-        self.log.configure(state='disabled')
+        self._log_redirect.clear()
+
+    @staticmethod
+    def _delete_contents(folder, label):
+        removed = failed = 0
+        for item in folder.iterdir():
+            try:
+                if item.is_dir() and not item.is_symlink():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+                removed += 1
+            except Exception as e:
+                print(f"Failed to delete {item.name}: {e}")
+                failed += 1
+        print(f"{label} cleared." + (f" ({failed} item(s) could not be deleted)" if failed else ""))
+
+    def _clear_folder(self, folder, label):
+        """Shared by Clear Input / Clear Output: checks, asks for confirmation, then deletes in the background."""
+        if self._busy_jobs():
+            print("  A job is running. Wait for it to finish (or cancel it) before clearing.")
+            return
+        if not folder.exists() or not any(folder.iterdir()):
+            print(f"{label} folder is already empty.")
+            return
+        if not messagebox.askyesno(
+                f"Clear {label}",
+                f"Delete everything inside this folder?\n\n{folder}\n\nThis cannot be undone.",
+                icon="warning", parent=self.root):
+            print(f"  Clear {label.lower()} cancelled.")
+            return
+        self._run(lambda: self._delete_contents(folder, label), job_name=f"Clear {label}")
 
     def clear_output(self):
-        out_dir = Path(self.config["output"]) / "output"
-        if not out_dir.exists() or not any(out_dir.iterdir()):
-            print("Output folder is already empty.")
+        problem = self._path_problem("output")
+        if problem:
+            print(problem)
             return
-        for item in out_dir.iterdir():
-            try:
-                shutil.rmtree(item) if item.is_dir() else item.unlink()
-            except Exception as e:
-                print(f"Failed to delete {item.name}: {e}")
-        print("Output cleared.")
+        self._clear_folder(Path(self.config["output"]) / "output", "Output")
 
     def clear_input(self):
-        input_dir = get_input(self.config)
-        if not input_dir.exists() or not any(input_dir.iterdir()):
-            print("Input folder is already empty.")
+        problem = self._path_problem("input")
+        if problem:
+            print(problem)
             return
-        for item in input_dir.iterdir():
-            try:
-                shutil.rmtree(item) if item.is_dir() else item.unlink()
-            except Exception as e:
-                print(f"Failed to delete {item.name}: {e}")
-        print("Input cleared.")
+        self._clear_folder(get_input(self.config), "Input")
 
     @staticmethod
     def _open_folder(path):
@@ -932,23 +1105,24 @@ class App:
             subprocess.Popen(["xdg-open", str(path)])
 
     def open_input(self):
+        problem = self._path_problem("input")
+        if problem:
+            print(problem)
+            return
         input_dir = get_input(self.config)
-        if not self.config.get("input", ""):
-            print("  Input folder is not configured. Set it in Preferences (≡).")
-            return
-        if not input_dir.exists():
-            print(f"  Input folder does not exist yet: {input_dir}")
-            return
+        input_dir.mkdir(parents=True, exist_ok=True)
         print(f"  Input: {input_dir}")
         self._open_folder(input_dir)
 
     def open_output(self):
-        out_dir = Path(self.config.get("output", "")) / "output"
-        if not self.config.get("output", ""):
-            print("  Output folder is not configured. Set it in Preferences (≡).")
+        problem = self._path_problem("output")
+        if problem:
+            print(problem)
             return
+        out_dir = Path(self.config["output"]) / "output"
         if not out_dir.exists():
             print(f"  Output folder does not exist yet: {out_dir}")
+            print("  It is created the first time a tool runs.")
             return
 
         target = out_dir
@@ -970,45 +1144,47 @@ class App:
         self._run(lambda: self._pick_files_work(choice), job_name="Add Input")
 
     def _pick_files_work(self, choice=None):
-        if not self.config.get("input", ""):
-            print("  Input folder is not configured. Set it in Preferences (≡).")
-            return
-
+        """Runs in a worker thread. File dialogs are opened by the main thread (see _call_in_main)."""
         input_dir = get_input(self.config)
         input_dir.mkdir(parents=True, exist_ok=True)
-        dialog_result = queue.Queue()
-
-        def open_dialog(c):
-            if c == "files":
-                paths = filedialog.askopenfilenames(title="Select files to add to Input")
-                dialog_result.put(list(paths))
-            elif c == "folder":
-                folder = filedialog.askdirectory(title="Select a folder to add to Input")
-                dialog_result.put([folder] if folder else [])
-            elif c == "output":
-                out_dir = Path(self.config.get("output", "")) / "output"
-                if out_dir.exists():
-                    dialog_result.put([str(f) for f in out_dir.iterdir()])
-                else:
-                    dialog_result.put([])
-            else:
-                dialog_result.put([])
 
         if choice is None:
             print("Add to Input")
             print("  Enter = Files   Space = Folder   Escape = Cancel")
             raw = thread_safe_input("Waiting for key...").strip()
-            if raw == "FILES":
-                c = "files"
-            elif raw == "FOLDER":
-                c = "folder"
-            else:
+            c = {"FILES": "files", "FOLDER": "folder"}.get(raw)
+            if c is None:
                 print("  Cancelled.")
                 return
         else:
             c = choice
 
-        self.root.after(0, lambda: open_dialog(c))
+        if c == "output":
+            problem = self._path_problem("output")
+            if problem:
+                print(problem)
+                return
+
+        dialog_result = queue.Queue()
+
+        def open_dialog():
+            result = []
+            try:
+                if c == "files":
+                    picked = filedialog.askopenfilenames(title="Select files to add to Input")
+                    result = list(self.root.tk.splitlist(picked)) if isinstance(picked, str) else list(picked)
+                elif c == "folder":
+                    folder = filedialog.askdirectory(title="Select a folder to add to Input")
+                    result = [folder] if folder else []
+                elif c == "output":
+                    out_dir = Path(self.config["output"]) / "output"
+                    result = [str(f) for f in out_dir.iterdir()] if out_dir.exists() else []
+            except Exception as e:
+                print(f"  Could not open the file picker: {e}")
+            finally:
+                dialog_result.put(result)      # always answer, or this job would wait forever
+
+        self._call_in_main(open_dialog)
         paths = dialog_result.get()
         if not paths:
             print("  Nothing selected.")
