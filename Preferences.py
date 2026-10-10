@@ -32,6 +32,7 @@ PREF_TIPS = {
     "default_img_fmt":            "The default image format the Image Converter converts to.",
     "default_pdf_to_images_fmt":  "The default image format for images exported from a PDF.",
     "default_dedupe_mode":        "'Keep one copy' excludes all identical files except the original from the output.\n Delete all excludes all identical files from output, including its original.",
+    "default_dedupe_hash":        "Exact (SHA-256) is fast and only matches files that are byte-for-byte identical, including metadata.\n Perceptual (pHash) matches images that look visually identical regardless of format or metadata, but is significantly slower.",
     "default_dpi":                "The Default DPI when converting a PDF to Images.\n A DPI higher than 72 or 96 is generally only useful for paper printing.",
     "hotkey_continue":            "The key you press to continue or confirm in the log prompt.\n Primarily used in Classic Mode",
     "hotkey_cancel":              "The key you press to cancel in the log prompt. Primarily used in Classic Mode.\n Not all Operations can be canceled consistently once they are running.",
@@ -277,6 +278,7 @@ def show_preferences(app):
         ("default_img_fmt",             "Image Converter: Default Format","combo", ["ask", "jpg", "png", "webp", "bmp", "tiff"]),
         ("default_pdf_to_images_fmt",   "PDF to Images: Default Format", "combo", ["ask", "jpg", "png"]),
         ("default_dedupe_mode",         "Find Duplicates: Default Mode", "combo", ["ask", "keep one copy", "delete all"]),
+        ("default_dedupe_hash",         "Find Duplicates: Hash Method",  "combo", ["exact", "perceptual"]),
         ("default_dpi",                 "Default DPI (PDF to Images)",   "combo", ["ask","72","96","150","200","300","600"]),
     ]
 
