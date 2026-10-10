@@ -17,16 +17,16 @@ PREF_TIPS = {
     "allow_concurrent_jobs":      "Run multiple different tools at the same time. With this, outputs can generate in quick succession.\n To prevent new outputs from replacing old ones, use the run name option and disable replace output.\n\n Generally leads to more errors and bugs and tends to spread computer resources thin.",
     "auto_clear_input":           "Automatically Empties the Input folder after an Operation is completed.",
     "ask_run_name":               "Prompts you to name each output. The folder generated in output will use that name.\n Does not name individual files.",
-    "replace_output":             "When enabled, the most recent output replaces the an older output with the same name.\n\n If you don't name or sort your runs, the new output will simply replace the previous one, so you can re-run a operation if you make a mistake",
+    "replace_output":             "When enabled, the most recent output replaces an older output with the same name.\n\n If you don't name or sort your runs, the new output will simply replace the previous one, so you can re-run an operation if you make a mistake",
     "sort_output":                "Organises the output into subfolders named after each operation.\n If outputs are also named, they are named within the operation folder.",
     "guide_empty_input":          "Dims the tool buttons when the Input folder is empty\n A visual reminder to add an Input.",
-    "show_tooltips":              "Shows the small 'i' hint icons next to buttons.\n You cannot disable tooltips in Preferences.",
-    "log_default_expanded":       "Compressible areas of the Log, not the toolbar,\n are expanded by default rather than collapsed.",
+    "show_tooltips":              "Shows the small 'i' hint icons next to buttons and settings.\n Takes effect after you press Save.",
+    "log_default_expanded":       "Collapsible areas of the Log, not the toolbar,\n are expanded by default rather than collapsed.",
     "show_timestamps":            "Prints a timestamp and divider line in the log before each Operation.\n Happens for all Tools and the Status Utility.",
     "open_output_recent":         "When enabled, the Open Output button opens the most recent output rather than the entire Output folder.\n Useful for jumping straight to your latest result.",
     "min_free_gb":                "The Minimum Storage Requirement to begin an Operation in GB.\n The program will usually warn you of low storage before this.",
     "default_folders_to_pdf_mode":"The 'Combine' option compresses all folders into one PDF.\n The 'Individual' option makes one PDF per folder, preserving the previous file system.",
-    "default_sort":               "Controls the Order files are processed in.\n Natural mode sorts files by numbers extracted from their name.\n In Natural sort 'episode 1' would come before 'chapter 2, rather than going by letter.\n\n 'None' simply uses your filesystem order.",
+    "default_sort":               "Controls the Order files are processed in.\n Natural mode reads numbers in names as numbers.\n So 'chapter 2' comes before 'chapter 10' (a plain alphabetical sort would put 10 first).\n\n 'None' simply uses your filesystem order.",
     "default_folder_renamer_mode":"The mode the Folder Renamer uses by default.\n\n The 'Extract Number' mode names the folder after any numbers in its name to make it easier to sort.\n This mode doesn't work very well if there are multiple unrelated numbers in the file name",
     "default_file_renamer_mode":  "The mode the File Renamer uses by default.\n\n The 'Sequence' mode names the file after numerical order in the file system with the option to add a base.\n This base replaces the current file name and is applied to all files.\n\n This mode doesn't work very well if there are multiple unrelated numbers in the file name",
     "default_img_fmt":            "The default image format the Image Converter converts to.",
@@ -36,8 +36,8 @@ PREF_TIPS = {
     "default_dpi":                "The Default DPI when converting a PDF to Images.\n A DPI higher than 72 or 96 is generally only useful for paper printing.",
     "hotkey_continue":            "The key you press to continue or confirm in the log prompt.\n Primarily used in Classic Mode",
     "hotkey_cancel":              "The key you press to cancel in the log prompt. Primarily used in Classic Mode.\n Not all Operations can be canceled consistently once they are running.",
-    "throttle_cpu":               "Throttles the Operation if CPU usage exceeds the threshold.\n If your computer already exceeds this limit, it will throttle until it drops below it.\n 0 removes the limit, and can cause you're computer to crash.",
-    "throttle_mem":               "Throttles the Operation if RAM usage exceeds the threshold.\n If your computer already exceeds this limit, it will throttle until it drops below it.\n 0 removes the limit, and can cause you're computer to crash.",
+    "throttle_cpu":               "Throttles the Operation if CPU usage exceeds the threshold.\n If your computer already exceeds this limit, it will throttle until it drops below it.\n 0 removes the limit, and can cause your computer to crash.",
+    "throttle_mem":               "Throttles the Operation if RAM usage exceeds the threshold.\n If your computer already exceeds this limit, it will throttle until it drops below it.\n 0 removes the limit, and can cause your computer to crash.",
     "log_blank_lines":            "Double spaces most text in the log.\nDisable for a more compact log.",
 }
 
@@ -89,8 +89,22 @@ class FlatDropdown(tk.Frame):
 
 
 def show_preferences(app):
-    t = THEMES["light"]
+    existing = getattr(app, "_prefs_win", None)
+    if existing is not None and existing.winfo_exists():     # already open: don't open a second copy
+        existing.lift()
+        existing.focus_force()
+        return
+
+    t = app._theme()          # follows dark mode and any custom colours (it used to be hard-wired to light)
+
+    def Label(parent, **kw):
+        """tk.Label that defaults to the current theme's colours."""
+        kw.setdefault("bg", t["bg"])
+        kw.setdefault("fg", t["fg"])
+        return tk.Label(parent, **kw)
+
     win = tk.Toplevel(app.root)
+    app._prefs_win = win
     win.title("Preferences")
     win.resizable(True, True)
     win.geometry("640x520")
@@ -125,11 +139,11 @@ def show_preferences(app):
             lbl.configure(bg=t["hover"] if n == name else t["btn_bg"], fg=t["fg"])
         win.update_idletasks()
 
-    tk.Label(sidebar, text="Preferences", font=('', 8),
+    Label(sidebar, text="Preferences", font=('', 8),
              bg=t["btn_bg"], fg=t["hint_fg"], pady=8).pack(fill='x')
 
     for name in pages:
-        lbl = tk.Label(sidebar, text=name, anchor='w', padx=12,
+        lbl = Label(sidebar, text=name, anchor='w', padx=12,
                        bg=t["btn_bg"], fg=t["fg"], font=('', 8),
                        cursor="hand2")
         lbl.pack(fill='x', ipady=7)
@@ -178,7 +192,7 @@ def show_preferences(app):
             _tip[0].destroy()
         x = widget.winfo_rootx() - win.winfo_rootx() + widget.winfo_width() + 4
         y = widget.winfo_rooty() - win.winfo_rooty()
-        lbl = tk.Label(win, text=text, wraplength=220, justify='left',
+        lbl = Label(win, text=text, wraplength=220, justify='left',
                        font=('Courier', 7), bg=t["bg"], fg=t["fg"], padx=6, pady=4)
         lbl.place(x=x, y=y)
         lbl.lift()
@@ -190,7 +204,7 @@ def show_preferences(app):
             _tip[0] = None
 
     def _pref_btn(parent, text, cmd):
-        lbl = tk.Label(parent, text=text, bg=t["bg"], fg=t["fg"],
+        lbl = Label(parent, text=text, bg=t["bg"], fg=t["fg"],
                        font=('', 8), padx=6, cursor="hand2")
         lbl.bind("<Button-1>", lambda e: cmd())
         lbl.bind("<Enter>", lambda e: lbl.configure(bg=t["hover"]))
@@ -198,7 +212,7 @@ def show_preferences(app):
         return lbl
 
     def _check_btn(parent, var):
-        lbl = tk.Label(parent, text="✓" if var.get() else " ",
+        lbl = Label(parent, text="✓" if var.get() else " ",
                        bg=t["btn_bg"], fg=t["fg"], font=('', 8),
                        width=2, cursor="hand2")
         def toggle(e):
@@ -211,7 +225,7 @@ def show_preferences(app):
 
     def _info_btn(parent, row, key, tips_dict, col=2):
         if key in tips_dict and app.config.get("show_tooltips", True):
-            info = tk.Label(parent, text="i", bg=t["bg"], fg=t["hint_fg"],
+            info = Label(parent, text="i", bg=t["bg"], fg=t["hint_fg"],
                             font=('', 9), cursor="hand2", padx=2)
             info.grid(row=row, column=col, sticky='w')
             info.bind("<Enter>", lambda e, w=info, txt=tips_dict[key]: (
@@ -222,16 +236,16 @@ def show_preferences(app):
     # ── PATHS tab ──────────────────────────────────────────────────────────
     p = pages["Paths"]
     r = 0
-    tk.Label(p, text="Paths", font=('', 8, 'bold'), bg=t["bg"]).grid(
+    Label(p, text="Paths", font=('', 8, 'bold'), bg=t["bg"]).grid(
         row=r, column=0, columnspan=2, sticky='w', pady=(0, 8))
     r += 1
 
     for key, title in (("input", "Input directory"), ("output", "Output directory")):
         row_f = tk.Frame(p, bg=t["bg"])
         row_f.grid(row=r, column=0, columnspan=2, sticky='w', pady=(6, 0))
-        tk.Label(row_f, text=title, anchor='w', bg=t["bg"]).pack(side='left')
+        Label(row_f, text=title, anchor='w', bg=t["bg"]).pack(side='left')
         if app.config.get("show_tooltips", True):
-            info = tk.Label(row_f, text="i", bg=t["bg"], fg=t["hint_fg"],
+            info = Label(row_f, text="i", bg=t["bg"], fg=t["hint_fg"],
                             font=('', 9), cursor="hand2", padx=2)
             info.pack(side='left', padx=(3, 0))
             info.bind("<Enter>", lambda e, w=info, txt=PATH_TIPS[key]: (
@@ -239,7 +253,7 @@ def show_preferences(app):
             info.bind("<Leave>", lambda e, w=info: (
                 w.configure(bg=t["bg"]), _hide_pref_tip()))
         r += 1
-        e = tk.Entry(p, width=40, readonlybackground=t["entry_bg"])
+        e = tk.Entry(p, width=40, bg=t["entry_bg"], fg=t["entry_fg"], readonlybackground=t["entry_bg"])
         e.insert(0, paths[key].get())
         e.configure(state='readonly')
         e.grid(row=r, column=0, sticky='w')
@@ -297,7 +311,7 @@ def show_preferences(app):
     def build_fields(page, fields, start_row=1):
         for i, (key, label, typ, opts) in enumerate(fields):
             row = start_row + i
-            tk.Label(page, text=label, anchor='w', bg=t["bg"], font=('', 8)).grid(
+            Label(page, text=label, anchor='w', bg=t["bg"], font=('', 8)).grid(
                 row=row, column=0, sticky='w', pady=4, padx=(0, 16))
             _info_btn(page, row, key, PREF_TIPS)
             if typ == "check":
@@ -306,53 +320,54 @@ def show_preferences(app):
                 _check_btn(page, v).grid(row=row, column=1, sticky='w')
             else:
                 raw_val = str(app.config.get(key, opts[0]))
-                val = raw_val if raw_val in opts else opts[0]
-                v = tk.StringVar(value=val)
+                if raw_val not in opts:
+                    opts = list(opts) + [raw_val]      # keep the real value instead of replacing it
+                v = tk.StringVar(value=raw_val)
                 FlatDropdown(page, v, opts, t, win).grid(row=row, column=1, sticky='w')
             vars_[key] = v
 
     p = pages["General"]
-    tk.Label(p, text="General", font=('', 8, 'bold'), bg=t["bg"]).grid(
+    Label(p, text="General", font=('', 8, 'bold'), bg=t["bg"]).grid(
         row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
     build_fields(p, general_fields)
 
     p = pages["Tools"]
-    tk.Label(p, text="Tools", font=('', 8, 'bold'), bg=t["bg"]).grid(
+    Label(p, text="Tools", font=('', 8, 'bold'), bg=t["bg"]).grid(
         row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
     build_fields(p, tools_fields)
 
     p = pages["Hotkeys"]
-    tk.Label(p, text="Hotkeys", font=('', 8, 'bold'), bg=t["bg"]).grid(
+    Label(p, text="Hotkeys", font=('', 8, 'bold'), bg=t["bg"]).grid(
         row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
     build_fields(p, hotkey_fields)
 
     p = pages["Throttle"]
-    tk.Label(p, text="Throttle", font=('', 8, 'bold'), bg=t["bg"]).grid(
+    Label(p, text="Throttle", font=('', 8, 'bold'), bg=t["bg"]).grid(
         row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
-    tk.Label(p, text="Limit resource usage during jobs.", fg=t["hint_fg"],
+    Label(p, text="Limit resource usage during jobs.", fg=t["hint_fg"],
              bg=t["bg"], font=('', 8)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
     build_fields(p, throttle_fields, start_row=2)
 
     # ── BUTTONS tab ────────────────────────────────────────────────────────
     p = pages["Buttons"]
-    tk.Label(p, text="Visible Buttons", font=('', 8, 'bold'), bg=t["bg"]).grid(
+    Label(p, text="Visible Buttons", font=('', 8, 'bold'), bg=t["bg"]).grid(
         row=0, column=0, columnspan=2, sticky='w', pady=(0, 4))
-    tk.Label(p, text="Toggle which tool buttons are visible in the sidebar.", fg=t["hint_fg"],
+    Label(p, text="Toggle which tool buttons are visible in the sidebar.", fg=t["hint_fg"],
              bg=t["bg"], font=('', 8)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
 
     btn_vars = {}
     for i, (key, section, label, _) in enumerate(app.TOGGLEABLE):
         v = tk.BooleanVar(value=bool(app.config.get(key, True)))
-        tk.Label(p, text=f"{label}  ({section})", anchor='w', bg=t["bg"], font=('', 8)).grid(
+        Label(p, text=f"{label}  ({section})", anchor='w', bg=t["bg"], font=('', 8)).grid(
             row=i + 2, column=0, sticky='w', pady=3)
         _check_btn(p, v).grid(row=i + 2, column=1, sticky='w')
         btn_vars[key] = v
 
     # ── THEMES tab ────────────────────────────────────────────────────────
     p = pages["Themes"]
-    tk.Label(p, text="Themes", font=('', 8, 'bold'), bg=t["bg"]).grid(
+    Label(p, text="Themes", font=('', 8, 'bold'), bg=t["bg"]).grid(
         row=0, column=0, columnspan=4, sticky='w', pady=(0, 4))
-    tk.Label(p, text="Customise colours for light and dark mode. Type a 6-digit hex code.",
+    Label(p, text="Customise colours for light and dark mode. Type a 6-digit hex code.",
              fg=t["hint_fg"], bg=t["bg"], font=('', 8)).grid(
         row=1, column=0, columnspan=4, sticky='w', pady=(0, 8))
 
@@ -361,14 +376,14 @@ def show_preferences(app):
 
     headers = ["Key", "Light", "", "Dark", ""]
     for col, h in enumerate(headers):
-        tk.Label(p, text=h, font=('', 8, 'bold'), bg=t["bg"], fg=t["hint_fg"]).grid(
+        Label(p, text=h, font=('', 8, 'bold'), bg=t["bg"], fg=t["hint_fg"]).grid(
             row=2, column=col, padx=(0 if col == 0 else 4, 0), sticky='w')
 
     saved_themes = app.config.get("themes", {})
 
     for i, key in enumerate(THEMES["light"].keys()):
         row = i + 3
-        tk.Label(p, text=KEY_LABELS.get(key, key), anchor='w', bg=t["bg"], font=('', 8)).grid(
+        Label(p, text=KEY_LABELS.get(key, key), anchor='w', bg=t["bg"], font=('', 8)).grid(
             row=row, column=0, sticky='w', pady=2, padx=(0, 12))
 
         for col, mode in ((1, "light"), (3, "dark")):
@@ -381,7 +396,7 @@ def show_preferences(app):
                          bg=t["entry_bg"], fg=t["entry_fg"])
             e.grid(row=row, column=col, sticky='w', padx=(0, 2))
 
-            swatch = tk.Label(p, width=2, bg=current, relief='flat')
+            swatch = Label(p, width=2, bg=current, relief='flat')
             swatch.grid(row=row, column=col + 1, padx=(0, 8))
 
             def update_swatch(var=v, sw=swatch):
@@ -397,7 +412,7 @@ def show_preferences(app):
                 v.set(THEMES[mode][key])
 
     bottom_row = len(THEMES["light"].keys()) + 3
-    reset_btn = tk.Label(p, text="Reset to Defaults", bg=t["bg"], fg=t["fg"],
+    reset_btn = Label(p, text="Reset to Defaults", bg=t["bg"], fg=t["fg"],
                          font=('', 8), cursor="hand2", padx=4)
     reset_btn.grid(row=bottom_row, column=0, columnspan=5, sticky='w', pady=(8, 0))
     reset_btn.bind("<Button-1>", lambda e: reset_themes())
@@ -405,7 +420,9 @@ def show_preferences(app):
     reset_btn.bind("<Leave>", lambda e: reset_btn.configure(bg=t["bg"]))
 
     # ── Save / Cancel ──────────────────────────────────────────────────────
-    def _save_themes():
+    def _collect_themes():
+        """Returns {mode: {key: colour}} containing ONLY colours that differ from the built-in defaults
+        (so future default improvements still reach you), or None if a hex code is invalid."""
         bad = []
         for mode, keys in theme_vars.items():
             for key, v in keys.items():
@@ -413,24 +430,36 @@ def show_preferences(app):
                 if not hex_re.match(val):
                     bad.append(f"{mode}/{key}: '{val}'")
         if bad:
-            messagebox.showwarning("Invalid Hex", "Fix these:\n" + "\n".join(bad))
-            return False
+            messagebox.showwarning("Invalid Hex", "Fix these:\n" + "\n".join(bad), parent=win)
+            return None
         custom = {}
         for mode, keys in theme_vars.items():
-            custom[mode] = {k: v.get().strip() for k, v in keys.items()}
-        app.config["themes"] = custom
-        return True
+            changed = {k: v.get().strip() for k, v in keys.items()
+                       if v.get().strip().lower() != THEMES[mode][k].lower()}
+            if changed:
+                custom[mode] = changed
+        return custom
 
     def save():
-        if not _save_themes():
+        # 1) validate everything, changing nothing yet
+        custom_themes = _collect_themes()
+        if custom_themes is None:
             return
+        new_paths = {}
         for key in ("input", "output"):
             val = paths[key].get().strip()
-            if val and Path(val).exists():
-                app.config[key] = val
-            elif val:
-                messagebox.showwarning("Invalid Path", f"Does not exist: {val}")
+            if val and not Path(val).is_dir():
+                messagebox.showwarning("Invalid Path", f"This folder does not exist:\n{val}", parent=win)
                 return
+            if val:
+                new_paths[key] = val
+        if vars_["hotkey_continue"].get() == vars_["hotkey_cancel"].get():
+            messagebox.showwarning("Hotkeys", "The Continue and Cancel hotkeys must be different keys.", parent=win)
+            return
+
+        # 2) everything is valid: apply
+        app.config["themes"] = custom_themes
+        app.config.update(new_paths)
         for key, v in vars_.items():
             val = v.get()
             if key in ("auto_clear_input", "replace_output", "sort_output",
@@ -456,7 +485,7 @@ def show_preferences(app):
         win.destroy()
 
     for text, cmd in (("Cancel", win.destroy), ("Save", save)):
-        lbl = tk.Label(sidebar, text=text, anchor='w', padx=12,
+        lbl = Label(sidebar, text=text, anchor='w', padx=12,
                        bg=t["btn_bg"], fg=t["fg"], font=('', 8),
                        cursor="hand2")
         lbl.pack(fill='x', ipady=7, side='bottom')
