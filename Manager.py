@@ -80,7 +80,7 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "zip_extract_input":          True,   # unpack .zip / .cbz files found in Input before a tool runs
     "default_doc_format":         "pdf",  # what Folders to PDF / Images to PDF write: "pdf" or "epub"
     "epub_direction":             "rtl",  # reading direction of EPUBs the tools write: "rtl" (manga) or "ltr"
-    "zip_compression":            "zip",  # "zip"/"cbz" = one archive per result folder (cbz: images only, else zip) | "folder" = loose files
+    "zip_compression":            "zip",  # default folder format: "cbz", "zip", or "uncompressed"
     "keep_documents_unarchived":  True,   # PDFs and EPUBs go directly into Output instead of inside result archives
 }
 
@@ -778,7 +778,7 @@ def _get_working_folders(src, use_sort=True):
 # INPUT : every tool unpacks .zip / .cbz files found anywhere in Input (even nested ones) into a
 #         normal folder before it starts, so every tool treats them exactly like folders.
 #         The zip is removed once it has been unpacked (Input only ever holds copies).
-# OUTPUT: with Preferences > Tools > Output Archive set to zip or cbz, every top-level FOLDER of a result is packed
+# OUTPUT: with Default Folder Production Format set to zip or cbz, every top-level FOLDER of a result is packed
 #         into its own "<folder>.zip" / "<folder>.cbz" (chapter by chapter). Loose images at the top level are
 #         packed together into one archive. When Keep PDFs & EPUBs Direct in Output is on, those documents are
 #         moved out of result folders before packing. The main output folder
@@ -1029,7 +1029,7 @@ def _write_archive(config, files, base, dest_dir, stem, mode, cancel, replace, n
 
 
 def _place_results(config, src, dest, loose_name, cancel=None):
-    """Moves the results found in `src` into `dest` and, if Preferences > Tools > Output Archive says so, packs them:
+    """Moves the results found in `src` into `dest` and, if the folder production format requests it, packs them:
       - PDFs and EPUBs in result folders are moved into `dest` when the preference is enabled,
       - every remaining top-level FOLDER becomes its own archive (chapter by chapter / volume by volume),
       - loose IMAGES at the top level are packed together into one archive called `loose_name`.
@@ -2233,6 +2233,7 @@ def pdf_to_images(config, cancel=None):
     src.mkdir(parents=True, exist_ok=True)
 
     print("PDF to Images")
+    print(f"{_doc_name(config)} to Images")
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
         return _cancel()
@@ -2268,6 +2269,7 @@ def pdf_to_images(config, cancel=None):
     print(f"  DPI: {dpi}")
 
     out = get_output(config, "pdf to images", run_name)
+    out = get_output(config, f"{_doc_format(config)} to images", run_name)
     print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
@@ -2652,7 +2654,7 @@ def info():
 'status'  'exit'
 
 Zip files (.zip / .cbz) in Input are unpacked automatically.
-Each result folder is saved as its own zip by default; choose cbz or folder in Preferences > Tools > Output Archive.
+Each result folder is saved as its own zip by default; choose cbz or uncompressed in Preferences > Tools > Default Folder Production Format.
 
 All output goes to output/
 """)
