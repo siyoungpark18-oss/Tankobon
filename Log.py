@@ -211,7 +211,7 @@ class LogRedirect(io.TextIOBase):
               s.startswith("Total:") or s.startswith("PDFs saved:") or
               s.startswith("combined:") or s.startswith("renamed:") or
               s.startswith("copied:") or s.startswith("pages exported:") or
-              s.startswith("scanned:")):
+              s.startswith("scanned:") or s.startswith("extracted:")):
             tag = "log_bold"
             cfg = {}
         elif msg.startswith("    ") and self._active_section:
