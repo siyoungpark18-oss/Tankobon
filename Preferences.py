@@ -17,9 +17,9 @@ PREF_TIPS = {
     "allow_concurrent_jobs":      "Run multiple different tools at the same time. With this, outputs can generate in quick succession.\n To prevent new outputs from replacing old ones, use the run name option and disable replace output.\n\n Generally leads to more errors and bugs and tends to spread computer resources thin.",
     "auto_clear_input":           "Automatically Empties the Input folder after an Operation is completed.",
     "confirm_clear":              "Asks 'Are you sure?' before Clear Input / Clear Output deletes anything.\n Off by default: Input only holds copies of your files,\n but Output results are not backed up anywhere.",
-    "ask_run_name":               "Prompts you to name each output. The folder generated in output will use that name.\n Does not name individual files.",
-    "replace_output":             "When enabled, the most recent output replaces an older output with the same name.\n\n If you don't name or sort your runs, the new output will simply replace the previous one, so you can re-run an operation if you make a mistake",
-    "sort_output":                "Organises the output into subfolders named after each operation.\n If outputs are also named, they are named within the operation folder.",
+    "ask_run_name":               "Prompts you to name each output. The results are then placed in a folder with that name inside the output folder.\n Leave the name blank, and results go straight into the main output folder.\n Does not name individual files.",
+    "replace_output":             "When enabled, a new result replaces an older one with the same name. In your own run / operation folders that is the whole folder; in the main output folder it is each file, folder or archive with the same name.\n When disabled, the new result gets a number added to its name instead (Ch 1 (2).cbz).",
+    "sort_output":                "Puts results in a subfolder named after each tool.\n If outputs are also named, they are named within the tool folder.\n With this and Run Name both off, results go straight into the main output folder.",
     "guide_empty_input":          "Dims the tool buttons when the Input folder is empty\n A visual reminder to add an Input.",
     "show_tooltips":              "Shows the small 'i' hint icons next to buttons and settings.\n Takes effect after you press Save.",
     "log_default_expanded":       "Collapsible areas of the Log, not the toolbar,\n are expanded by default rather than collapsed.",
@@ -42,7 +42,7 @@ PREF_TIPS = {
     "log_blank_lines":            "Double spaces most text in the log.\nDisable for a more compact log.",
     "preview_limit":              "How many lines a Log expansion lists before it shows '… and N more'.\n Type any whole number. 0 shows everything.\n Anything that isn't a whole number is replaced with 10.",
     "zip_extract_input":          "Zip (.zip) and comic archive (.cbz) files in Input are unpacked into folders before any tool runs, so they work like normal folders.\n The zip is removed after it is unpacked (Input only holds copies). Zips inside zips are unpacked too.\n Zips that are broken or password-protected are left alone and reported.",
-    "zip_compression":            "Zip saves each result as a single zip file named after the run, inside its output folder.\n CBZ does the same but names it .cbz for comic readers. A CBZ may only hold images, so results with anything else (PDFs, etc.) are saved as a normal zip instead, with a warning.\n Folder leaves the results as ordinary loose files and folders.\n The archive is checked before the loose files are removed.",
+    "zip_compression":            "Zip or CBZ packs every top-level folder of a result into its own archive (one per chapter / volume), named after the folder. Loose images are packed together into one; PDFs and other files stay as they are. Nothing is packed around the main output folder.\n A CBZ may only hold images, so a folder with anything else in it is saved as a normal zip, with a warning.\n Folder leaves everything as ordinary files and folders.\n Each archive is checked before its folder is removed.",
     "show_folder_stats":          "Shows the number of images and the total size next to each folder in the Log.\n Needs a quick look at each file's size, so turn this off if scanning very large Inputs feels slow.",
 }
 
