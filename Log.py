@@ -4,10 +4,10 @@ import time
 import queue
 import tkinter as tk
 
-# One pair of symbols used for EVERY collapsible thing (sidebar tools and log sections).
-# They are deliberately different from the "▶" run button so the two can't be confused.
-EXPAND   = "+"
-COLLAPSE = "−"
+# One pair of symbols used for EVERY collapsible thing (sidebar tools and log sections):
+# ▶ = collapsed (click to open), ▼ = open (click to close).
+EXPAND   = "▶"
+COLLAPSE = "▼"
 
 
 class LogRedirect(io.TextIOBase):
