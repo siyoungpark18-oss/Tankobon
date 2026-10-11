@@ -781,7 +781,7 @@ class App:
             save_config(self.config)
 
         for symbol, delta, tip in (('+', 1, "Larger log text"), ('-', -1, "Smaller log text")):
-            btn = tk.Label(log_header, text=symbol, font=('', 7, 'bold'),
+            btn = tk.Label(log_header, text=symbol, font=('', 10, ''),
                            bg=t["bg"], fg=t["fg"], padx=6, cursor="hand2")
             btn.pack(side='right', padx=(2, 0))
             btn.bind("<Button-1>", lambda e, d=delta: _change_font(d))
