@@ -31,7 +31,8 @@ from Themes import THEMES
 TOOL_LABELS = {
     "Folders to PDF", "Images to PDF", "Folders to EPUB", "Images to EPUB", "Folder Renamer", "File Renamer",
     "Combine Image Sets", "Image Converter", "Find Duplicates",
-    "PDF Combiner", "EPUB Combiner", "PDF Splitter", "EPUB Splitter", "PDF to Images",
+    "PDF Combiner", "EPUB Combiner", "PDF Splitter", "EPUB Splitter",
+    "PDF to Images", "EPUB to Images",
 }
 
 
@@ -42,6 +43,15 @@ class App:
         self.root.title("Tankobon")
         self.root.resizable(True, True)
         self.config = load_config()
+        self.current_doc_format = self.config.get("default_doc_format", "pdf")
+        if self.current_doc_format not in ("pdf", "epub"):
+            self.current_doc_format = "pdf"
+        self.current_folder_format = self.config.get("zip_compression", "zip")
+        if self.current_folder_format == "folder":
+            self.current_folder_format = "uncompressed"
+        if self.current_folder_format not in ("cbz", "zip", "uncompressed"):
+            self.current_folder_format = "zip"
+        self.config["zip_compression"] = self.current_folder_format
         self._refresh_format_tool_names()
         self._migrate_legacy_theme_colors()
         self.cancel_event = threading.Event()
@@ -787,6 +797,23 @@ class App:
             self._format_buttons[fmt] = button
         self._update_format_selector()
 
+        folder_format_row = tk.Frame(left)
+        folder_format_row.pack(fill='x', pady=(0, 4))
+        folder_theme = self._theme()
+        tk.Label(folder_format_row, text="Folder production:", bg=folder_theme["bg"],
+                 fg=folder_theme["hint_fg"], font=self._uf(-1)).pack(side='left', padx=(1, 5))
+        self._folder_format_buttons = {}
+        for fmt, label in (("cbz", "CBZ"), ("zip", "ZIP"), ("uncompressed", "Uncompressed")):
+            button = tk.Label(folder_format_row, text=label, bg=folder_theme["bg"],
+                              fg=folder_theme["fg"], font=self._uf(-1, bold=True),
+                              cursor="hand2", padx=4, pady=1)
+            button.pack(side='left', padx=1)
+            button.bind("<Button-1>", lambda e, f=fmt: self._set_folder_format(f))
+            button.bind("<Enter>", lambda e, b=button: b.configure(bg=self._theme()["hover"]))
+            button.bind("<Leave>", lambda e, b=button: self._update_format_selector())
+            self._folder_format_buttons[fmt] = button
+        self._update_format_selector()
+
         status_row = tk.Frame(left)
         status_row.pack(fill='x', pady=(0, 4))
         self._status_row = status_row
@@ -854,15 +881,16 @@ class App:
     # ── button building ───────────────────────────────────────────────────────
 
     def _refresh_format_tool_names(self):
-        """Use the selected production format in the two image-to-document tool names."""
-        fmt = self.config.get("default_doc_format", "pdf")
+        """Use the current production format in the document tool names."""
+        fmt = self.current_doc_format
         fmt = fmt if fmt in ("pdf", "epub") else "pdf"
-        self.config["default_doc_format"] = fmt
+        self.current_doc_format = fmt
         title = fmt.upper()
         aliases = {"Folders to PDF": f"Folders to {title}",
                    "Images to PDF": f"Images to {title}",
                    "PDF Combiner": f"{title} Combiner",
-                   "PDF Splitter": f"{title} Splitter"}
+                   "PDF Splitter": f"{title} Splitter",
+                   "PDF to Images": f"{title} to Images"}
         cls = type(self)
         self.TOGGLEABLE = [(key, section, aliases.get(label, label), method)
                            for key, section, label, method in cls.TOGGLEABLE]
@@ -881,26 +909,43 @@ class App:
                 self.TOOLTIPS[new] = f"Combines the images in Input into one {title} book, with the images as its pages."
             elif old == "PDF Combiner":
                 self.TOOLTIPS[new] = f"Combines PDF and image-based EPUB inputs into one {title}. PDFs are rendered to page images when EPUB is selected."
-            else:
+            elif old == "PDF Splitter":
                 self.TOOLTIPS[new] = f"Splits the selected PDF or image-based EPUB into {title} parts at the page ranges you enter."
+            else:
+                self.TOOLTIPS[new] = "Exports page images from PDFs and image-based EPUBs. The tool name follows the selected file production format."
 
     def _set_doc_format(self, fmt):
-        if fmt not in ("pdf", "epub") or fmt == self.config.get("default_doc_format", "pdf"):
+        if fmt not in ("pdf", "epub") or fmt == self.current_doc_format:
             return
-        self.config["default_doc_format"] = fmt
-        save_config(self.config)
+        self.current_doc_format = fmt
         self._refresh_format_tool_names()
         self._rebuild_buttons()
         self._update_format_selector()
+
+    def _set_folder_format(self, fmt):
+        if fmt not in ("cbz", "zip", "uncompressed") or fmt == self.current_folder_format:
+            return
+        self.current_folder_format = fmt
+        self._update_format_selector()
+
+    def _production_config(self):
+        """Make per-operation settings from the current bars without changing saved defaults."""
+        config = dict(self.config)
+        config["default_doc_format"] = self.current_doc_format
+        config["zip_compression"] = self.current_folder_format
+        return config
 
     def _update_format_selector(self):
         if not hasattr(self, "_format_buttons"):
             return
         t = self._theme()
-        selected = self.config.get("default_doc_format", "pdf")
+        selected = self.current_doc_format
         for fmt, button in self._format_buttons.items():
             button.configure(bg=t["btn_bg"] if fmt == selected else t["bg"],
                              fg=t["btn_fg"] if fmt == selected else t["fg"])
+        for fmt, button in getattr(self, "_folder_format_buttons", {}).items():
+            button.configure(bg=t["btn_bg"] if fmt == self.current_folder_format else t["bg"],
+                             fg=t["btn_fg"] if fmt == self.current_folder_format else t["fg"])
 
     def _rebuild_buttons(self):
         self._btn_labels.clear()
@@ -1101,10 +1146,17 @@ class App:
 
     def _show_preferences(self):
         before = self.config.get("default_doc_format", "pdf")
+        before_folder = self.config.get("zip_compression", "zip")
         show_preferences(self)
         if self.config.get("default_doc_format", "pdf") != before:
+            self.current_doc_format = self.config.get("default_doc_format", "pdf")
             self._refresh_format_tool_names()
             self._rebuild_buttons()
+            self._update_format_selector()
+        if self.config.get("zip_compression", "zip") != before_folder:
+            self.current_folder_format = self.config.get("zip_compression", "zip")
+            if self.current_folder_format == "folder":
+                self.current_folder_format = "uncompressed"
             self._update_format_selector()
 
     # ── job running ───────────────────────────────────────────────────────────
@@ -1152,7 +1204,7 @@ class App:
 
         # The tool gets its OWN copy of the settings with the chosen option filled in.
         # The real settings (self.config) are never touched, so nothing can leak into config.json.
-        cfg = dict(self.config)
+        cfg = self._production_config()
         config_key = self.TOOL_MODE_CONFIG_KEY.get(job_name)
         if choice is not None and config_key:
             cfg[config_key] = choice
@@ -1410,38 +1462,49 @@ class App:
     # ── tool runners ──────────────────────────────────────────────────────────
 
     def run_folders_to_pdf(self):
-        self._run(lambda: folders_to_pdf(self.config, self.cancel_event),
-                  job_name=f"Folders to {self.config.get('default_doc_format', 'pdf').upper()}")
+        config = self._production_config()
+        self._run(lambda: folders_to_pdf(config, self.cancel_event),
+                  job_name=f"Folders to {self.current_doc_format.upper()}")
 
     def run_images_to_pdf(self):
-        self._run(lambda: images_to_pdf(self.config, self.cancel_event),
-                  job_name=f"Images to {self.config.get('default_doc_format', 'pdf').upper()}")
+        config = self._production_config()
+        self._run(lambda: images_to_pdf(config, self.cancel_event),
+                  job_name=f"Images to {self.current_doc_format.upper()}")
 
     def run_folder_renamer(self):
-        self._run(lambda: folder_renamer(self.config, self.cancel_event), job_name="Folder Renamer")
+        config = self._production_config()
+        self._run(lambda: folder_renamer(config, self.cancel_event), job_name="Folder Renamer")
 
     def run_file_renamer(self):
-        self._run(lambda: file_renamer(self.config, self.cancel_event), job_name="File Renamer")
+        config = self._production_config()
+        self._run(lambda: file_renamer(config, self.cancel_event), job_name="File Renamer")
 
     def run_combine(self):
-        self._run(lambda: combine_image_sets(self.config, self.cancel_event), job_name="Combine Image Sets")
+        config = self._production_config()
+        self._run(lambda: combine_image_sets(config, self.cancel_event), job_name="Combine Image Sets")
 
     def run_converter(self):
-        self._run(lambda: image_converter(self.config, self.cancel_event), job_name="Image Converter")
+        config = self._production_config()
+        self._run(lambda: image_converter(config, self.cancel_event), job_name="Image Converter")
 
     def run_duplicates(self):
-        self._run(lambda: find_duplicates(self.config, self.cancel_event), job_name="Find Duplicates")
+        config = self._production_config()
+        self._run(lambda: find_duplicates(config, self.cancel_event), job_name="Find Duplicates")
 
     def run_pdf_splitter(self):
-        self._run(lambda: pdf_splitter(self.config, self.cancel_event),
-                  job_name=f"{self.config.get('default_doc_format', 'pdf').upper()} Splitter")
+        config = self._production_config()
+        self._run(lambda: pdf_splitter(config, self.cancel_event),
+                  job_name=f"{self.current_doc_format.upper()} Splitter")
 
     def run_pdf_combiner(self):
-        self._run(lambda: pdf_combiner(self.config, self.cancel_event),
-                  job_name=f"{self.config.get('default_doc_format', 'pdf').upper()} Combiner")
+        config = self._production_config()
+        self._run(lambda: pdf_combiner(config, self.cancel_event),
+                  job_name=f"{self.current_doc_format.upper()} Combiner")
 
     def run_pdf_to_images(self):
-        self._run(lambda: pdf_to_images(self.config, self.cancel_event), job_name="PDF to Images")
+        config = self._production_config()
+        self._run(lambda: pdf_to_images(config, self.cancel_event),
+                  job_name=f"{self.current_doc_format.upper()} to Images")
 
     def run_status(self):
         if self._status_running:
