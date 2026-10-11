@@ -155,10 +155,10 @@ class App:
         "PDF Splitter":       "Splits a PDF into parts at page numbers you specify.",
         "PDF to Images":      "Converts a PDF into individual image files. Resource intensive.",
         "Add Input":          "Copies files or a folder into the Input directory for processing.",
-        "Clear Input":        "Deletes everything in the Input folder (asks first). Your original files are not affected.",
+        "Clear Input":        "Deletes everything in the Input folder. Your original files are not affected (Input only holds copies).\nTo be asked first, turn on Preferences > General > Confirm before Clearing.",
         "Status":             "Shows what is currently in the Input and Output folders.",
         "Clear Log":          "Clears the log display.",
-        "Clear Output":       "Deletes everything in the Output folder (asks first).",
+        "Clear Output":       "Deletes everything in the Output folder.\nTo be asked first, turn on Preferences > General > Confirm before Clearing.",
         "Cancel Operation":   "Stops the running job at its next safe point. PDF writing itself cannot be interrupted.",
         "Open Input":         "Opens the input folder in Finder/Explorer.",
         "Open Output":        "Opens the output folder in Finder/Explorer and prints the path to the log.",
@@ -469,7 +469,9 @@ class App:
         var   = tk.StringVar()
         entry = tk.Entry(self._input_frame, textvariable=var, font=('Courier', 11),
                          bg=t["entry_bg"], fg=t["entry_fg"],
-                         insertbackground=t["entry_fg"])
+                         insertbackground=t["entry_fg"],
+                         relief='flat', highlightthickness=1,
+                         highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"])
         entry.pack(side='left', fill='x', expand=True, padx=4)
         entry.focus_set()
 
@@ -1142,19 +1144,20 @@ class App:
         print(f"{label} cleared." + (f" ({failed} item(s) could not be deleted)" if failed else ""))
 
     def _clear_folder(self, folder, label):
-        """Shared by Clear Input / Clear Output: checks, asks for confirmation, then deletes in the background."""
+        """Shared by Clear Input / Clear Output: checks, asks first only if Preferences says so, then deletes in the background."""
         if self._busy_jobs():
             print("  A job is running. Wait for it to finish (or cancel it) before clearing.")
             return
         if not folder.exists() or not any(folder.iterdir()):
             print(f"{label} folder is already empty.")
             return
-        if not messagebox.askyesno(
-                f"Clear {label}",
-                f"Delete everything inside this folder?\n\n{folder}\n\nThis cannot be undone.",
-                icon="warning", parent=self.root):
-            print(f"  Clear {label.lower()} cancelled.")
-            return
+        if self.config.get("confirm_clear", False):
+            if not messagebox.askyesno(
+                    f"Clear {label}",
+                    f"Delete everything inside this folder?\n\n{folder}\n\nThis cannot be undone.",
+                    icon="warning", parent=self.root):
+                print(f"  Clear {label.lower()} cancelled.")
+                return
         self._run(lambda: self._delete_contents(folder, label), job_name=f"Clear {label}")
 
     def clear_output(self):
