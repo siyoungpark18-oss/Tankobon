@@ -26,7 +26,9 @@ PREF_TIPS = {
     "show_timestamps":            "Prints a timestamp and divider line in the log before each Operation.\n Happens for all Tools and the Status Utility.",
     "open_output_recent":         "When enabled, the Open Output button opens the most recent output rather than the entire Output folder.\n Useful for jumping straight to your latest result.",
     "min_free_gb":                "The Minimum Storage Requirement to begin an Operation in GB.\n The program will usually warn you of low storage before this.",
-    "default_folders_to_pdf_mode":"The 'Combine' option compresses all folders into one PDF.\n The 'Individual' option makes one PDF per folder, preserving the previous file system.",
+    "default_doc_format":         "Choose PDF or EPUB for document production. An EPUB is one multi-page book: each source image or rendered PDF page becomes a page. Folders to PDF/EPUB in Individual mode makes one book per folder; Combine makes one book from all folders. The main interface selector and this setting stay in sync. EPUB output from a PDF must render its pages as images, which can take longer and need extra space.",
+    "epub_direction":             "Reading direction of the EPUBs Tankobon writes. RTL (right to left) is how manga is read.\n It only changes the page-turn direction; the pages stay in the order they were processed.",
+    "default_folders_to_pdf_mode":"The 'Combine' option makes one PDF or EPUB book from all folders. The 'Individual' option makes one book per folder. In an EPUB, each image is a page in that book.",
     "default_sort":               "Controls the Order files are processed in.\n Natural mode reads numbers in names as numbers.\n So 'chapter 2' comes before 'chapter 10' (a plain alphabetical sort would put 10 first).\n\n 'None' simply uses your filesystem order.",
     "default_folder_renamer_mode":"The mode the Folder Renamer uses by default.\n\n The 'Extract Number' mode names the folder after any numbers in its name to make it easier to sort.\n This mode doesn't work very well if there are multiple unrelated numbers in the file name",
     "default_file_renamer_mode":  "The mode the File Renamer uses by default.\n\n The 'Sequence' mode names the file after numerical order in the file system with the option to add a base.\n This base replaces the current file name and is applied to all files.\n\n This mode doesn't work very well if there are multiple unrelated numbers in the file name",
@@ -42,7 +44,8 @@ PREF_TIPS = {
     "log_blank_lines":            "Double spaces most text in the log.\nDisable for a more compact log.",
     "preview_limit":              "How many lines a Log expansion lists before it shows '… and N more'.\n Type any whole number. 0 shows everything.\n Anything that isn't a whole number is replaced with 10.",
     "zip_extract_input":          "Zip (.zip) and comic archive (.cbz) files in Input are unpacked into folders before any tool runs, so they work like normal folders.\n The zip is removed after it is unpacked (Input only holds copies). Zips inside zips are unpacked too.\n Zips that are broken or password-protected are left alone and reported.",
-    "zip_compression":            "Zip or CBZ packs every top-level folder of a result into its own archive (one per chapter / volume), named after the folder. Loose images are packed together into one; PDFs and other files stay as they are. Nothing is packed around the main output folder.\n A CBZ may only hold images, so a folder with anything else in it is saved as a normal zip, with a warning.\n Folder leaves everything as ordinary files and folders.\n Each archive is checked before its folder is removed.",
+    "zip_compression":            "Zip or CBZ packs every top-level folder of a result into its own archive (one per chapter / volume), named after the folder. Loose images are packed together into one. Nothing is packed around the main output folder.\n A CBZ may only hold images, so a folder with anything else in it is saved as a normal zip, with a warning.\n Folder leaves everything as ordinary files and folders.\n Each archive is checked before its folder is removed.",
+    "keep_documents_unarchived":  "Writes PDFs and EPUBs directly into the Output folder, regardless of the Output Archive setting (Zip or CBZ). Other files are handled by the archive setting as usual.",
     "show_folder_stats":          "Shows the number of images and the total size next to each folder in the Log.\n Needs a quick look at each file's size, so turn this off if scanning very large Inputs feels slow.",
 }
 
@@ -295,12 +298,15 @@ def show_preferences(app):
         ("show_folder_stats",     "Show Folder Counts & Sizes",     "check", None),
         ("show_timestamps",       "Show Timestamps",                "check", None),
         ("open_output_recent",    "Open Most Recent Output",        "check", None),
+        ("keep_documents_unarchived", "Write PDFs & EPUBs Directly to Output", "check", None),
         ("min_free_gb",           "Minimum Free Space",             "combo", ["0","1","2","3","5","10"]),
     ]
 
     tools_fields = [
-        ("default_folders_to_pdf_mode", "Folders to PDF: Default Mode",  "combo", ["ask", "combine", "individual"]),
-        ("default_images_to_pdf_mode", "Images to PDF: Default Mode", "combo", ["ask", "combine", "reorder & combine"]),
+        ("default_doc_format",          "File Production Format",         "combo", ["pdf", "epub"]),
+        ("epub_direction",              "EPUB Reading Direction",         "combo", ["rtl", "ltr"]),
+        ("default_folders_to_pdf_mode", "Folders to File: Default Mode",  "combo", ["ask", "combine", "individual"]),
+        ("default_images_to_pdf_mode", "Images to File: Default Mode", "combo", ["ask", "combine", "reorder & combine"]),
         ("default_sort",                "Default Sort Mode",              "combo", ["natural", "none"]),
         ("default_folder_renamer_mode", "Folder Renamer: Default Mode",  "combo", ["ask", "prefix", "suffix", "replace", "extract number"]),
         ("default_file_renamer_mode",   "File Renamer: Default Mode",    "combo", ["ask", "prefix", "suffix", "replace", "sequence"]),
@@ -332,7 +338,7 @@ def show_preferences(app):
                 row=row, column=0, sticky='w', pady=4, padx=(0, 16))
             _info_btn(page, row, key, PREF_TIPS)
             if typ == "check":
-                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats", "zip_extract_input") else False
+                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats", "zip_extract_input", "keep_documents_unarchived") else False
                 v = tk.BooleanVar(value=bool(app.config.get(key, default)))
                 _check_btn(page, v).grid(row=row, column=1, sticky='w')
             elif typ == "entry":
@@ -490,7 +496,7 @@ def show_preferences(app):
             if key in ("auto_clear_input", "confirm_clear", "replace_output", "sort_output",
                        "guide_empty_input", "show_tooltips", "allow_concurrent_jobs",
                        "log_default_expanded", "show_timestamps", "open_output_recent", "log_blank_lines",
-                       "show_folder_stats", "zip_extract_input"):
+                       "show_folder_stats", "zip_extract_input", "keep_documents_unarchived"):
                 app.config[key] = bool(val)
             elif key in ("throttle_cpu", "throttle_mem"):
                 app.config[key] = _safe_int(val, 80, 0, 100)
