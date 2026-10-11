@@ -27,6 +27,7 @@ PREF_TIPS = {
     "open_output_recent":         "When enabled, the Open Output button opens the most recent output rather than the entire Output folder.\n Useful for jumping straight to your latest result.",
     "min_free_gb":                "The Minimum Storage Requirement to begin an Operation in GB.\n The program will usually warn you of low storage before this.",
     "default_doc_format":         "Choose PDF or EPUB for document production. An EPUB is one multi-page book: each source image or rendered PDF page becomes a page. Folders to PDF/EPUB in Individual mode makes one book per folder; Combine makes one book from all folders. The main interface selector and this setting stay in sync. EPUB output from a PDF must render its pages as images, which can take longer and need extra space.",
+    "default_doc_format":         "The format selected when Tankobon starts. The PDF/EPUB selector in the main interface changes the current session only; use this setting to change the startup default. An EPUB is one multi-page book. In Individual mode, each folder becomes one book with images as its pages; Combine makes one book from all folders. EPUB output from a PDF renders its pages as images, which can take longer and need extra space.",
     "epub_direction":             "Reading direction of the EPUBs Tankobon writes. RTL (right to left) is how manga is read.\n It only changes the page-turn direction; the pages stay in the order they were processed.",
     "default_folders_to_pdf_mode":"The 'Combine' option makes one PDF or EPUB book from all folders. The 'Individual' option makes one book per folder. In an EPUB, each image is a page in that book.",
     "default_sort":               "Controls the Order files are processed in.\n Natural mode reads numbers in names as numbers.\n So 'chapter 2' comes before 'chapter 10' (a plain alphabetical sort would put 10 first).\n\n 'None' simply uses your filesystem order.",
@@ -46,6 +47,8 @@ PREF_TIPS = {
     "zip_extract_input":          "Zip (.zip) and comic archive (.cbz) files in Input are unpacked into folders before any tool runs, so they work like normal folders.\n The zip is removed after it is unpacked (Input only holds copies). Zips inside zips are unpacked too.\n Zips that are broken or password-protected are left alone and reported.",
     "zip_compression":            "Zip or CBZ packs every top-level folder of a result into its own archive (one per chapter / volume), named after the folder. Loose images are packed together into one. Nothing is packed around the main output folder.\n A CBZ may only hold images, so a folder with anything else in it is saved as a normal zip, with a warning.\n Folder leaves everything as ordinary files and folders.\n Each archive is checked before its folder is removed.",
     "keep_documents_unarchived":  "Writes PDFs and EPUBs directly into the Output folder, regardless of the Output Archive setting (Zip or CBZ). Other files are handled by the archive setting as usual.",
+    "zip_compression":            "The folder format selected when Tankobon starts. The CBZ/ZIP/Uncompressed selector in the main interface changes the current session only; use this setting to change the startup default. Each result folder becomes one CBZ or ZIP, or stays as ordinary files and folders when Uncompressed is selected. A CBZ may only hold images, so a folder with other file types is saved as ZIP instead.",
+    "keep_documents_unarchived":  "Writes PDFs and EPUBs directly into the Output folder, regardless of the selected folder format. Other files follow the CBZ, ZIP, or Uncompressed choice.",
     "show_folder_stats":          "Shows the number of images and the total size next to each folder in the Log.\n Needs a quick look at each file's size, so turn this off if scanning very large Inputs feels slow.",
 }
 
@@ -304,6 +307,8 @@ def show_preferences(app):
 
     tools_fields = [
         ("default_doc_format",          "File Production Format",         "combo", ["pdf", "epub"]),
+        ("default_doc_format",          "Default File Production Format", "combo", ["pdf", "epub"]),
+        ("zip_compression",             "Default Folder Production Format", "combo", ["cbz", "zip", "uncompressed"]),
         ("epub_direction",              "EPUB Reading Direction",         "combo", ["rtl", "ltr"]),
         ("default_folders_to_pdf_mode", "Folders to File: Default Mode",  "combo", ["ask", "combine", "individual"]),
         ("default_images_to_pdf_mode", "Images to File: Default Mode", "combo", ["ask", "combine", "reorder & combine"]),
