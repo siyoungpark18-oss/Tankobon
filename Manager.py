@@ -14,6 +14,13 @@ import errno
 import zipfile
 import tempfile
 import threading
+import io
+import uuid
+import posixpath
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from urllib.parse import unquote
+from xml.sax.saxutils import escape as _xml_escape
 from pypdf import PdfReader, PdfWriter
 import sys as _sys
 
@@ -71,7 +78,10 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "preview_limit":              10,     # max lines a Log expansion shows (0 = show everything)
     "show_folder_stats":          True,   # show image count + size next to each folder in the Log
     "zip_extract_input":          True,   # unpack .zip / .cbz files found in Input before a tool runs
+    "default_doc_format":         "pdf",  # what Folders to PDF / Images to PDF write: "pdf" or "epub"
+    "epub_direction":             "rtl",  # reading direction of EPUBs the tools write: "rtl" (manga) or "ltr"
     "zip_compression":            "zip",  # "zip"/"cbz" = one archive per result folder (cbz: images only, else zip) | "folder" = loose files
+    "keep_documents_unarchived":  True,   # PDFs and EPUBs go directly into Output instead of inside result archives
 }
 
 #FUNCTIONS——————————————————————————————————————————————————————————————————————————————————————————————————
@@ -295,6 +305,260 @@ def save_pdf(image_paths, output_path):
     print(f"  Saved: {output_path.name}  ({size_mb:.1f} MB)")
 
 
+# ══ EPUB SUPPORT ══════════════════════════════════════════════════════════════
+# OUTPUT: Folder and image production tools write a PDF or a multi-page fixed-layout EPUB book, selected in the
+#         main interface or Preferences > Tools. In Individual mode, each folder produces one book; images
+#         become pages within that book, never separate one-image EPUB files.
+# INPUT : PDF Combiner, PDF Splitter and PDF to Images also accept EPUBs. Only IMAGE-BASED EPUBs work (every
+#         page is a picture). A normal text EPUB has no page images to take out, and is reported as such.
+
+DOCUMENT_EXTENSIONS = {'.pdf', '.epub'}
+EPUB_IMAGE_TYPES    = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                       '.gif': 'image/gif', '.webp': 'image/webp'}          # image types an EPUB reader must support
+_READABLE_IMAGES    = set(EPUB_IMAGE_TYPES) | {'.bmp', '.tif', '.tiff'}      # image types we can read out of an EPUB
+_IMG_REF = re.compile(r'<(?:img|image)\b[^>]*?\b(?:src|(?:xlink:)?href)\s*=\s*["\']([^"\']+)["\']', re.I | re.S)
+
+
+class _PathImage:
+    """A page image on disk, for build_epub()."""
+    def __init__(self, path):
+        self.path = Path(path)
+        self.suffix = self.path.suffix.lower()
+
+    def read(self):
+        return self.path.read_bytes()
+
+
+class _ZipImage:
+    """A page image inside an open zip (an EPUB), for build_epub()."""
+    def __init__(self, zf, member):
+        self.zf, self.member = zf, member
+        self.suffix = Path(member).suffix.lower()
+
+    def read(self):
+        return self.zf.read(self.member)
+
+
+def _render_pdf_pages_as_images(pdf_path, page_numbers, temp_dir, prefix, cancel=None, dpi=150):
+    """Render selected PDF pages as PNG page images for a multi-page EPUB book."""
+    try:
+        from pdf2image import convert_from_path
+    except ImportError as exc:
+        raise RuntimeError("pdf2image is required to write an EPUB from PDF pages") from exc
+    rendered_pages = []
+    for serial, page_number in enumerate(page_numbers, 1):
+        if cancel is not None and cancel.is_set():
+            break
+        images = convert_from_path(str(pdf_path), dpi=dpi, first_page=page_number,
+                                   last_page=page_number, poppler_path=_POPPLER_PATH)
+        if not images:
+            raise RuntimeError(f"could not render PDF page {page_number}")
+        path = Path(temp_dir) / f"{prefix}_{serial:06d}.png"
+        try:
+            images[0].save(path, format="PNG")
+        finally:
+            for image in images:
+                image.close()
+        rendered_pages.append(_PathImage(path))
+    return rendered_pages
+
+
+class _BuildCancelled(Exception):
+    pass
+
+
+def _doc_format(config):
+    fmt = config.get("default_doc_format", "pdf")
+    return fmt if fmt in ("pdf", "epub") else "pdf"
+
+
+def _doc_name(config):
+    return _doc_format(config).upper()
+
+
+def _local(tag):
+    return tag.rsplit("}", 1)[-1]
+
+
+def epub_pages(zf):
+    """Page images of an image-based EPUB, in reading order. zf = an open ZipFile.
+    Returns (members, direction, title): the image paths inside the zip, "rtl" or "ltr", and the book title (or None).
+    members is empty for a normal text EPUB. Raises ValueError if this isn't an EPUB at all."""
+    try:
+        container = ET.fromstring(zf.read("META-INF/container.xml"))
+    except KeyError:
+        raise ValueError("not a valid EPUB (no META-INF/container.xml)")
+    opf_path = next((el.get("full-path") for el in container.iter()
+                     if _local(el.tag) == "rootfile" and el.get("full-path")), None)
+    if not opf_path:
+        raise ValueError("not a valid EPUB (no package file)")
+    opf = ET.fromstring(zf.read(opf_path))
+
+    manifest, spine, title, direction = {}, [], None, "ltr"
+    for el in opf.iter():
+        name = _local(el.tag)
+        if name == "item" and el.get("id"):
+            manifest[el.get("id")] = el.get("href") or ""
+        elif name == "itemref" and el.get("idref"):
+            spine.append(el.get("idref"))
+        elif name == "spine" and el.get("page-progression-direction") == "rtl":
+            direction = "rtl"
+        elif name == "title" and title is None and el.text and el.text.strip():
+            title = el.text.strip()
+
+    names = set(zf.namelist())
+    opf_dir = posixpath.dirname(opf_path)
+    members = []
+    for idref in spine:
+        href = manifest.get(idref)
+        if not href:
+            continue
+        page = posixpath.normpath(posixpath.join(opf_dir, unquote(href.split("#")[0])))
+        if page not in names:
+            continue
+        if Path(page).suffix.lower() in _READABLE_IMAGES:           # an image listed directly in the spine
+            members.append(page)
+            continue
+        text = zf.read(page).decode("utf-8", "replace")
+        for ref in _IMG_REF.findall(text):
+            ref = unquote(ref.split("#")[0].split("?")[0])
+            if ref.startswith(("http:", "https:", "data:")):
+                continue
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(page), ref))
+            if target in names and Path(target).suffix.lower() in _READABLE_IMAGES:
+                members.append(target)
+    return members, direction, title
+
+
+def build_epub(config, pages, out_path, title, cancel=None, direction=None):
+    """Writes a fixed-layout (pre-paginated) EPUB 3 with one image per page.
+    pages = objects with .suffix and .read() (see _PathImage / _ZipImage). Returns False if cancelled.
+    The file is built under a temporary name and only given its real name once complete."""
+    direction = direction if direction in ("rtl", "ltr") else config.get("epub_direction", "rtl")
+    if direction not in ("rtl", "ltr"):
+        direction = "rtl"
+    out_path = Path(out_path)
+    partial = out_path.with_name(out_path.name + ".partial")
+    xml = lambda s: _xml_escape(str(s), {'"': "&quot;"})
+    manifest, spine, count = [], [], 0
+    try:
+        with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, allowZip64=True, strict_timestamps=False) as zf:
+            zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)   # must be first, uncompressed
+            zf.writestr("META-INF/container.xml",
+                        '<?xml version="1.0"?>\n'
+                        '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                        '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
+                        '</rootfiles></container>')
+            for i, src in enumerate(pages, 1):
+                if cancel is not None and cancel.is_set():
+                    raise _BuildCancelled()
+                throttle_if_needed(config, cancel)
+                data, suffix = src.read(), src.suffix.lower()
+                with Image.open(io.BytesIO(data)) as im:
+                    w, h = im.size
+                    if suffix not in EPUB_IMAGE_TYPES:             # bmp / tiff: not allowed in an EPUB, so PNG
+                        buf = io.BytesIO()
+                        (im.convert("RGB") if im.mode == "CMYK" else im).save(buf, "PNG")
+                        data, suffix = buf.getvalue(), ".png"
+                if suffix == ".jpeg":
+                    suffix = ".jpg"
+                img_name, page_name = f"{i:04d}{suffix}", f"page_{i:04d}.xhtml"
+                zf.writestr(f"OEBPS/images/{img_name}", data, compress_type=zipfile.ZIP_STORED)
+                zf.writestr(f"OEBPS/{page_name}",
+                            '<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+                            '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">\n'
+                            f'<head><meta charset="utf-8"/><title>{xml(title)} - {i}</title>\n'
+                            f'<meta name="viewport" content="width={w}, height={h}"/>\n'
+                            '<style>html, body { margin: 0; padding: 0; } '
+                            f'img {{ display: block; width: {w}px; height: {h}px; }}</style></head>\n'
+                            f'<body><img src="images/{img_name}" alt="Page {i}" width="{w}" height="{h}"/></body>\n</html>')
+                cover = ' properties="cover-image"' if i == 1 else ""
+                manifest.append(f'<item id="img{i:04d}" href="images/{img_name}" media-type="{EPUB_IMAGE_TYPES[suffix]}"{cover}/>')
+                manifest.append(f'<item id="page{i:04d}" href="{page_name}" media-type="application/xhtml+xml"/>')
+                spine.append(f'<itemref idref="page{i:04d}"/>')
+                count = i
+            zf.writestr("OEBPS/nav.xhtml",
+                        '<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+                        '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">\n'
+                        f'<head><meta charset="utf-8"/><title>{xml(title)}</title></head>\n'
+                        '<body><nav epub:type="toc" id="toc"><ol>'
+                        f'<li><a href="page_0001.xhtml">{xml(title)}</a></li></ol></nav></body>\n</html>')
+            zf.writestr("OEBPS/content.opf",
+                        '<?xml version="1.0" encoding="utf-8"?>\n'
+                        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" '
+                        'prefix="rendition: http://www.idpf.org/vocab/rendition/#">\n'
+                        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+                        f'<dc:identifier id="bookid">urn:uuid:{uuid.uuid4()}</dc:identifier>\n'
+                        f'<dc:title>{xml(title)}</dc:title>\n<dc:language>und</dc:language>\n'
+                        f'<meta property="dcterms:modified">{datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}</meta>\n'
+                        '<meta property="rendition:layout">pre-paginated</meta>\n'
+                        '<meta property="rendition:orientation">auto</meta>\n</metadata>\n<manifest>\n'
+                        '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>\n'
+                        + "\n".join(manifest) +
+                        f'\n</manifest>\n<spine page-progression-direction="{direction}">\n'
+                        + "\n".join(spine) + '\n</spine>\n</package>')
+        os.replace(partial, out_path)
+    except _BuildCancelled:
+        partial.unlink(missing_ok=True)
+        return False
+    except Exception:
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    print(f"  Saved: {out_path.name}  ({count} pages, {out_path.stat().st_size / (1024 * 1024):.1f} MB)")
+    return True
+
+
+def save_book(config, image_paths, stem_path, title=None, cancel=None):
+    """Writes the images as <stem_path>.pdf or .epub, depending on Preferences > Tools > Document Format.
+    Returns False only if the person cancelled (an EPUB can be cancelled, a PDF can't once it has started)."""
+    if _doc_format(config) == "pdf":
+        save_pdf(image_paths, stem_path.with_name(stem_path.name + ".pdf"))
+        return True
+    if not image_paths:
+        print("  No images to save.")
+        return True
+    print(f"  Converting {len(image_paths)} images → EPUB...")
+    return build_epub(config, [_PathImage(p) for p in image_paths],
+                      stem_path.with_name(stem_path.name + ".epub"), title or stem_path.name, cancel)
+
+
+def _image_to_pdf_bytes(data):
+    """One page image (bytes) as a one-page PDF."""
+    try:
+        return img2pdf.convert(data)
+    except Exception:                                        # transparency, webp, ...: let Pillow flatten it
+        buf = io.BytesIO()
+        with Image.open(io.BytesIO(data)) as im:
+            im.convert("RGB").save(buf, "PDF")
+        return buf.getvalue()
+
+
+def _export_epub_pages(config, epub_path, dest_dir, fmt, cancel=None):
+    """Takes the page images out of an EPUB into dest_dir as <name>_0001.jpg/png. Pages are written as they are
+    when they already have the wanted format, otherwise converted. Returns (pages_written, cancelled)."""
+    with zipfile.ZipFile(epub_path) as zf:
+        members, _direction, _title = epub_pages(zf)
+        if not members:
+            raise ValueError("no page images found (only image-based EPUBs are supported)")
+        for i, member in enumerate(members):
+            if cancel is not None and cancel.is_set():
+                return i, True
+            throttle_if_needed(config, cancel)
+            data = zf.read(member)
+            dest = dest_dir / f"{epub_path.stem}_{str(i + 1).zfill(4)}.{fmt}"
+            if Path(member).suffix.lower() in ((".jpg", ".jpeg") if fmt == "jpg" else (".png",)):
+                dest.write_bytes(data)
+            else:
+                with Image.open(io.BytesIO(data)) as im:
+                    if fmt == "jpg":
+                        im = im.convert("RGB")
+                    im.save(dest, "JPEG" if fmt == "jpg" else "PNG")
+        return len(members), False
+
+
 def _get_run_name(config, prompt="Run name (Enter to skip): "):
     """Returns the run name, "" when the person didn't name the run, or None if they cancelled."""
     if not config.get("ask_run_name", False):
@@ -516,7 +780,8 @@ def _get_working_folders(src, use_sort=True):
 #         The zip is removed once it has been unpacked (Input only ever holds copies).
 # OUTPUT: with Preferences > Tools > Output Archive set to zip or cbz, every top-level FOLDER of a result is packed
 #         into its own "<folder>.zip" / "<folder>.cbz" (chapter by chapter). Loose images at the top level are
-#         packed together into one archive; other files (PDFs, ...) stay as they are. The main output folder
+#         packed together into one archive. When Keep PDFs & EPUBs Direct in Output is on, those documents are
+#         moved out of result folders before packing. The main output folder
 #         itself is never archived. A .cbz is a plain zip, but comic readers expect only images inside, so a
 #         folder that holds anything else is saved as a normal .zip instead, with a warning.
 
@@ -765,9 +1030,9 @@ def _write_archive(config, files, base, dest_dir, stem, mode, cancel, replace, n
 
 def _place_results(config, src, dest, loose_name, cancel=None):
     """Moves the results found in `src` into `dest` and, if Preferences > Tools > Output Archive says so, packs them:
-      - every top-level FOLDER of the result becomes its own archive (chapter by chapter / volume by volume),
-      - loose IMAGES at the top level are packed together into one archive called `loose_name`,
-      - anything else (PDFs, ...) is left as a normal file.
+      - PDFs and EPUBs in result folders are moved into `dest` when the preference is enabled,
+      - every remaining top-level FOLDER becomes its own archive (chapter by chapter / volume by volume),
+      - loose IMAGES at the top level are packed together into one archive called `loose_name`.
     The main output folder itself is never archived. If src is dest (a run folder made by Sort Output / Run Name)
     everything is done in place. Items that fail to pack are kept as they are, never lost."""
     mode = _archive_mode(config)
@@ -807,6 +1072,21 @@ def _place_results(config, src, dest, loose_name, cancel=None):
             break
         try:
             if e.is_dir() and not e.is_symlink():
+                if config.get("keep_documents_unarchived", True):
+                    documents = sorted(
+                        (f for f in e.rglob("*") if f.is_file()
+                         and f.suffix.lower() in DOCUMENT_EXTENSIONS),
+                        key=lambda f: natural_sort_key(_rel(f, e)),
+                    )
+                    for doc in documents:
+                        shutil.move(str(doc), str(_free_name(dest, doc.name, replace)))
+                    # Remove empty nested directories left after extracting documents.
+                    for folder in sorted((f for f in e.rglob("*") if f.is_dir()),
+                                         key=lambda f: len(f.parts), reverse=True):
+                        try:
+                            folder.rmdir()
+                        except OSError:
+                            pass
                 if mode:
                     files = [f for f in e.rglob("*") if f.is_file()]
                     if not files:
@@ -815,7 +1095,10 @@ def _place_results(config, src, dest, loose_name, cancel=None):
                     handle(_write_archive(config, files, e, dest, e.name, mode, cancel, replace, notes),
                            e.name, source_files_dir=e)
                 elif not inplace:
-                    shutil.move(str(e), str(_free_name(dest, e.name, replace, is_dir=True)))
+                    if any(e.iterdir()):
+                        shutil.move(str(e), str(_free_name(dest, e.name, replace, is_dir=True)))
+                    else:
+                        shutil.rmtree(e, ignore_errors=True)
             elif e.is_file():
                 if mode and e.suffix.lower() in CBZ_IMAGE_EXTENSIONS:
                     loose_images.append(e)
@@ -911,28 +1194,29 @@ def folders_to_pdf(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
-    print("Folders to PDF")
+    print(f"Folders to {_doc_name(config)}")
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
         return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
-    out = get_output(config, "folders to pdf", run_name)
+    out = get_output(config, f"folders to {_doc_format(config)}", run_name)
     print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
     mode = config.get("default_folders_to_pdf_mode", "ask")
     if mode == "ask":
-        raw = input("Mode? 1=Combine all into one PDF (default)  2=One PDF per folder: ").strip()
+        raw = input(f"Mode? 1=Combine all into one {_doc_name(config)} (default)  2=One {_doc_name(config)} per folder: ").strip()
         if raw == SENTINEL:
             return _cancel()
         mode = "individual" if raw == "2" else "combine"
     elif mode not in ("combine", "individual"):
         mode = "combine"                                  # unusable saved value: fall back to the default
     print(f"  Mode: {mode}")
-    print(f"  Note: cannot be cancelled once PDF conversion starts.")
+    if _doc_format(config) == "pdf":
+        print(f"  Note: cannot be cancelled once PDF conversion starts.")
 
     use_sort = resolve_sort(config)
     print(f"  Sort: {'natural' if use_sort else 'none'}")
@@ -966,10 +1250,11 @@ def folders_to_pdf(config, cancel=None):
 
         if all_paths:
             try:
-                save_pdf(all_paths, out / "output.pdf")
+                if save_book(config, all_paths, out / "output", "Output", cancel) is False:
+                    return _cancel()
             except OSError as e:
                 if _is_no_space(e):
-                    print(f"  ✖ Job stopped — disk full. PDF may be incomplete.")
+                    print(f"  ✖ Job stopped — disk full. {_doc_name(config)} may be incomplete.")
                     print("")
                     return
                 raise
@@ -988,7 +1273,7 @@ def folders_to_pdf(config, cancel=None):
         total_skipped = []
         for folder in folders:
             if cancel and cancel.is_set():
-                print(f"  Cancelled. ({total_converted} PDFs saved so far)")
+                print(f"  Cancelled. ({total_converted} {_doc_name(config)}s saved so far)")
                 print("")
                 return
             throttle_if_needed(config, cancel)
@@ -1004,23 +1289,25 @@ def folders_to_pdf(config, cancel=None):
                 safe_name = re.sub(r'[^\w\s\-.]', '', unit.name).strip() or unit.name
                 label = unit.name if unit is folder else f"{folder.name} / {unit.name}"
                 extra = (f"  ·  {len(skipped)} skipped" if skipped else "") + \
-                        (f"  →  {safe_name}.pdf" if paths else "")
+                        (f"  →  {safe_name}.{_doc_format(config)}" if paths else "")
                 _log_group(config, label, paths, unit, extra=extra)
                 unit_data.append((safe_name, paths))
             for safe_name, paths in unit_data:
                 if not paths:
                     continue
-                pdf_path = out / f"{safe_name}.pdf"
                 try:
-                    save_pdf(paths, pdf_path)
+                    if save_book(config, paths, out / safe_name, safe_name, cancel) is False:
+                        print(f"  Cancelled. ({total_converted} {_doc_name(config)}s saved so far)")
+                        print("")
+                        return
                     total_converted += 1
                 except OSError as e:
                     if _is_no_space(e):
-                        print(f"  ✖ Disk full after {total_converted} PDF(s). Stopping.")
+                        print(f"  ✖ Disk full after {total_converted} {_doc_name(config)}(s). Stopping.")
                         print("")
                         return
-                    print(f"  Failed to save {safe_name}.pdf: {e}")
-        _print_summary(config, copied=total_converted, skipped=total_skipped or None, label="PDFs saved")
+                    print(f"  Failed to save {safe_name}.{_doc_format(config)}: {e}")
+        _print_summary(config, copied=total_converted, skipped=total_skipped or None, label=f"{_doc_name(config)}s saved")
         _finalize_output(config, out, cancel)
         print(f"  Done! → {_shown(out)}")
         print("")
@@ -1030,18 +1317,19 @@ def images_to_pdf(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
-    print("Images to PDF")
+    print(f"Images to {_doc_name(config)}")
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
         return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
-    out = get_output(config, "images to pdf", run_name)
+    out = get_output(config, f"images to {_doc_format(config)}", run_name)
     print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
-    print(f"  Note: cannot be cancelled once PDF conversion starts.")
+    if _doc_format(config) == "pdf":
+        print(f"  Note: cannot be cancelled once PDF conversion starts.")
 
     all_files = list(src.rglob("*"))
     image_files = []
@@ -1129,10 +1417,11 @@ def images_to_pdf(config, cancel=None):
         return
 
     try:
-        save_pdf(final_files, out / "output.pdf")
+        if save_book(config, final_files, out / "output", "Output", cancel) is False:
+            return _cancel()
     except OSError as e:
         if _is_no_space(e):
-            print(f"  ✖ Job stopped — disk full. PDF may be incomplete.")
+            print(f"  ✖ Job stopped — disk full. {_doc_name(config)} may be incomplete.")
             print("")
             return
         raise
@@ -1784,14 +2073,16 @@ def pdf_combiner(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
-    print("PDF Combiner")
+    output_format = _doc_format(config)
+    output_name = output_format.upper()
+    print(f"{output_name} Combiner")
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
         return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
-    out = get_output(config, "pdf combined", run_name)
+    out = get_output(config, f"{output_format} combined", run_name)
     print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
@@ -1805,58 +2096,125 @@ def pdf_combiner(config, cancel=None):
     for f in all_files:
         if not f.is_file():
             continue
-        if f.suffix.lower() == ".pdf":
+        if f.suffix.lower() in DOCUMENT_EXTENSIONS:
             pdfs.append(f)
         else:
-            skipped.append((f, "not a PDF"))
+            skipped.append((f, "not a PDF or EPUB"))
 
     if use_sort:
         pdfs = sorted(pdfs, key=lambda x: natural_sort_key(x.name))
 
     if not pdfs:
-        print("  No PDFs found in Input!")
+        print("  No PDFs or EPUBs found in Input!")
         if skipped:
             _print_summary(config, skipped=skipped)
         print("")
         return
 
-    print(f"  Found {len(pdfs)} PDF(s){_size_suffix(config, pdfs)}")
-    _log_scan(config, pdfs, src, noun="PDF")
+    n_epub = sum(1 for f in pdfs if f.suffix.lower() == ".epub")
+    n_pdf = len(pdfs) - n_epub
+    noun = "document" if n_epub else "PDF"
+    mix = f"  ({n_pdf} PDF, {n_epub} EPUB)" if n_epub and n_pdf else ""
+    print(f"  Found {len(pdfs)} {noun}(s){mix}{_size_suffix(config, pdfs)}")
+    _log_scan(config, pdfs, src, noun=noun)
+    as_epub = output_format == "epub"
+    if n_epub and n_pdf and not as_epub:
+        print("  PDFs and EPUBs are mixed, so the result is a PDF (EPUB pages are added as PDF pages).")
+    if as_epub and n_pdf:
+        print("  PDF pages will be rendered as images inside the EPUB book.")
     print("  Combining...")
-    writer = PdfWriter()
     total_pages = 0
     failed = []
     page_rows = []
-    for i, pdf_path in enumerate(pdfs):
-        if cancel and cancel.is_set():
-            print(f"  Cancelled. ({total_pages} pages combined so far)")
-            print("")
-            return
-        throttle_if_needed(config, cancel)
-        try:
-            reader = PdfReader(str(pdf_path))
-            for page in reader.pages:
-                writer.add_page(page)
-            total_pages += len(reader.pages)
-            page_rows.append(f"    {_rel(pdf_path, src)}  —  {len(reader.pages)} page(s)  (running total: {total_pages})")
-        except Exception as e:
-            failed.append((pdf_path, str(e)))
-    with _Section(config, f"  Pages per PDF ({len(page_rows)})") as s:
-        for row in page_rows:
-            s.add(row)
 
-    try:
-        out_path = out / "combined.pdf"
-        with open(out_path, "wb") as f:
-            writer.write(f)
-        size_mb = out_path.stat().st_size / (1024 * 1024)
-        print(f"  Saved: combined.pdf  ({total_pages} pages, {size_mb:.1f} MB)")
-    except OSError as e:
-        if _is_no_space(e):
-            print(f"  ✖ Disk full — could not write combined PDF.")
-            print("")
-            return
-        raise
+    if as_epub:
+        from contextlib import ExitStack
+        pages, direction = [], None
+        with tempfile.TemporaryDirectory(prefix="tankobon_epub_pages_") as page_dir, ExitStack() as stack:
+            for doc_index, doc in enumerate(pdfs):
+                if cancel and cancel.is_set():
+                    print(f"  Cancelled. ({total_pages} pages combined so far)")
+                    print("")
+                    return
+                throttle_if_needed(config, cancel)
+                try:
+                    if doc.suffix.lower() == ".epub":
+                        zf = stack.enter_context(zipfile.ZipFile(doc))
+                        members, doc_direction, _title = epub_pages(zf)
+                        if not members:
+                            raise ValueError("no page images found (only image-based EPUBs are supported)")
+                        direction = direction or doc_direction
+                        pages.extend(_ZipImage(zf, m) for m in members)
+                        n_pages = len(members)
+                    else:
+                        reader = PdfReader(str(doc))
+                        n_pages = len(reader.pages)
+                        pages.extend(_render_pdf_pages_as_images(
+                            doc, range(1, n_pages + 1), page_dir, f"doc{doc_index:04d}", cancel))
+                    total_pages += n_pages
+                    page_rows.append(f"    {_rel(doc, src)}  —  {n_pages} page(s)  (running total: {total_pages})")
+                except Exception as e:
+                    failed.append((doc, str(e)))
+            with _Section(config, f"  Pages per document ({len(page_rows)})") as section:
+                for row in page_rows:
+                    section.add(row)
+            if not pages:
+                print("  Nothing to combine.")
+                _print_summary(config, copied=0, failed=failed or None, skipped=skipped or None, label="combined")
+                print("")
+                return
+            try:
+                if not build_epub(config, pages, out / "combined.epub", "Combined", cancel, direction):
+                    return _cancel()
+            except OSError as e:
+                if _is_no_space(e):
+                    print("  ✖ Disk full — could not write combined EPUB.")
+                    print("")
+                    return
+                raise
+    else:
+        writer = PdfWriter()
+        for i, pdf_path in enumerate(pdfs):
+            if cancel and cancel.is_set():
+                print(f"  Cancelled. ({total_pages} pages combined so far)")
+                print("")
+                return
+            throttle_if_needed(config, cancel)
+            try:
+                if pdf_path.suffix.lower() == ".epub":
+                    with zipfile.ZipFile(pdf_path) as zf:
+                        members, _direction, _title = epub_pages(zf)
+                        if not members:
+                            raise ValueError("no page images found (only image-based EPUBs are supported)")
+                        for m in members:
+                            for page in PdfReader(io.BytesIO(_image_to_pdf_bytes(zf.read(m)))).pages:
+                                writer.add_page(page)
+                    n_pages = len(members)
+                else:
+                    reader = PdfReader(str(pdf_path))
+                    for page in reader.pages:
+                        writer.add_page(page)
+                    n_pages = len(reader.pages)
+                total_pages += n_pages
+                page_rows.append(f"    {_rel(pdf_path, src)}  —  {n_pages} page(s)  (running total: {total_pages})")
+            except Exception as e:
+                failed.append((pdf_path, str(e)))
+        with _Section(config, f"  Pages per {noun} ({len(page_rows)})") as section:
+            for row in page_rows:
+                section.add(row)
+        try:
+            out_path = out / "combined.pdf"
+            with open(out_path, "wb") as f:
+                writer.write(f)
+            size_mb = out_path.stat().st_size / (1024 * 1024)
+            print(f"  Saved: combined.pdf  ({total_pages} pages, {size_mb:.1f} MB)")
+        except OSError as e:
+            if _is_no_space(e):
+                print("  ✖ Disk full — could not write combined PDF.")
+                print("")
+                return
+            raise
+
 
     _print_summary(config, copied=len(pdfs) - len(failed), failed=failed or None,
                    skipped=skipped or None, label="combined")
@@ -1869,10 +2227,7 @@ def pdf_to_images(config, cancel=None):
     try:
         from pdf2image import convert_from_path
     except ImportError:
-        print("  pdf2image not installed — run: pip install pdf2image")
-        print("  Also need poppler: brew install poppler")
-        print("")
-        return
+        convert_from_path = None          # only a problem if there is a PDF to convert (EPUBs don't need it)
 
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
@@ -1923,10 +2278,16 @@ def pdf_to_images(config, cancel=None):
     for f in all_files:
         if not f.is_file():
             continue
-        if f.suffix.lower() == ".pdf":
+        if f.suffix.lower() in DOCUMENT_EXTENSIONS:
             pdfs.append(f)
         else:
-            skipped.append((f, "not a PDF"))
+            skipped.append((f, "not a PDF or EPUB"))
+
+    if convert_from_path is None and any(f.suffix.lower() == ".pdf" for f in pdfs):
+        print("  pdf2image not installed, so PDFs are skipped — run: pip install pdf2image")
+        print("  Also need poppler: brew install poppler")
+        skipped.extend((f, "pdf2image not installed") for f in pdfs if f.suffix.lower() == ".pdf")
+        pdfs = [f for f in pdfs if f.suffix.lower() != ".pdf"]
 
     use_sort = resolve_sort(config)
     print(f"  Sort: {'natural' if use_sort else 'none'}")
@@ -1934,7 +2295,7 @@ def pdf_to_images(config, cancel=None):
         pdfs = sorted(pdfs, key=lambda x: natural_sort_key(x.name))
 
     if not pdfs:
-        print("  No PDFs found in Input!")
+        print("  No PDFs or EPUBs found in Input!")
         if skipped:
             _print_summary(config, skipped=skipped)
         print("")
@@ -1944,13 +2305,21 @@ def pdf_to_images(config, cancel=None):
     page_counts = {}
     for pdf_path in pdfs:
         try:
-            page_counts[pdf_path] = len(PdfReader(str(pdf_path)).pages)
+            if pdf_path.suffix.lower() == ".epub":
+                with zipfile.ZipFile(pdf_path) as zf:
+                    page_counts[pdf_path] = len(epub_pages(zf)[0])
+            else:
+                page_counts[pdf_path] = len(PdfReader(str(pdf_path)).pages)
             total_page_count += page_counts[pdf_path]
         except Exception:
             pass
 
-    print(f"  Found {len(pdfs)} PDF(s), {total_page_count} pages total{_size_suffix(config, pdfs)}.")
-    _log_scan(config, pdfs, src, noun="PDF",
+    has_epub = any(f.suffix.lower() == ".epub" for f in pdfs)
+    noun = "document" if has_epub else "PDF"
+    print(f"  Found {len(pdfs)} {noun}(s), {total_page_count} pages total{_size_suffix(config, pdfs)}.")
+    if has_epub:
+        print("  EPUB pages are taken out as they are; DPI only applies to PDFs.")
+    _log_scan(config, pdfs, src, noun=noun,
               details={p: (f"{n} page(s)" if (n := page_counts.get(p)) is not None else "unreadable") for p in pdfs})
     print(f"  Note: cancelling will stop after the current page finishes.")
     total_pages = 0
@@ -1963,6 +2332,29 @@ def pdf_to_images(config, cancel=None):
             return
         pdf_out = out / pdf_path.stem
         pdf_out.mkdir(exist_ok=True)
+        if pdf_path.suffix.lower() == ".epub":
+            print(f"  Extracting: {pdf_path.name}...")
+            try:
+                n_done, was_cancelled = _export_epub_pages(config, pdf_path, pdf_out, fmt, cancel)
+            except OSError as e:
+                if _is_no_space(e):
+                    print(f"  ✖ Disk full after {total_pages} page(s). Stopping.")
+                    _print_summary(config, copied=total_pages, failed=failed or None,
+                                   skipped=skipped or None, label="pages exported")
+                    print("")
+                    return
+                failed.append((pdf_path, str(e)))
+                continue
+            except Exception as e:
+                failed.append((pdf_path, str(e)))
+                continue
+            if was_cancelled:
+                print(f"  Cancelled. ({total_pages + n_done} pages exported so far)")
+                print("")
+                return
+            total_pages += n_done
+            exported.append(f"    {_rel(pdf_path, src)}  →  {pdf_out.name}/  ({n_done} page(s))")
+            continue
         print(f"  Converting: {pdf_path.name}  (@ {dpi} DPI)...")
         try:
             page_count = len(PdfReader(str(pdf_path)).pages)
@@ -1999,7 +2391,7 @@ def pdf_to_images(config, cancel=None):
     _print_summary(config, copied=total_pages, failed=failed or None,
                    skipped=skipped or None, label="pages exported")
     _finalize_output(config, out, cancel)
-    print(f"  Total: {len(pdfs)} PDF(s), {total_pages} page(s) exported.")
+    print(f"  Total: {len(pdfs)} {noun}(s), {total_pages} page(s) exported.")
     print(f"  Done! → {_shown(out)}")
     print("")
 
@@ -2008,14 +2400,16 @@ def pdf_splitter(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
-    print("PDF Splitter")
+    output_format = _doc_format(config)
+    output_name = output_format.upper()
+    print(f"{output_name} Splitter")
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
         return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
-    out = get_output(config, "pdf split", run_name)
+    out = get_output(config, f"{output_format} split", run_name)
     print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
@@ -2023,34 +2417,53 @@ def pdf_splitter(config, cancel=None):
     use_sort = resolve_sort(config)
     print(f"  Sort: {'natural' if use_sort else 'none'}")
     pdfs = sorted(
-        [f for f in src.rglob("*") if f.is_file() and f.suffix.lower() == ".pdf"],
+        [f for f in src.rglob("*") if f.is_file() and f.suffix.lower() in DOCUMENT_EXTENSIONS],
         key=lambda x: natural_sort_key(x.name)
-    ) if use_sort else [f for f in src.rglob("*") if f.is_file() and f.suffix.lower() == ".pdf"]
+    ) if use_sort else [f for f in src.rglob("*") if f.is_file() and f.suffix.lower() in DOCUMENT_EXTENSIONS]
 
     if not pdfs:
-        print("  No PDF found in Input!")
+        print("  No PDF or EPUB found in Input!")
         print("")
         return
     if len(pdfs) > 1:
-        print(f"  Multiple PDFs found, only the first pdf: {pdfs[0].name} will be used")
+        print(f"  Multiple files found, only the first one: {pdfs[0].name} will be used")
     pdf_path = pdfs[0]
+    is_epub = pdf_path.suffix.lower() == ".epub"
+    kind = "EPUB" if is_epub else "PDF"
+    to_epub = output_format == "epub"
 
+    reader, epub_zf, epub_members, epub_direction = None, None, [], None
     try:
-        reader = PdfReader(str(pdf_path))
+        if is_epub:
+            epub_zf = zipfile.ZipFile(pdf_path)
+            epub_members, epub_direction, _title = epub_pages(epub_zf)
+            if not epub_members:
+                raise ValueError("no page images found (only image-based EPUBs are supported)")
+            total = len(epub_members)
+        else:
+            reader = PdfReader(str(pdf_path))
+            total = len(reader.pages)
     except Exception as e:
-        print(f"  Failed to read PDF: {e}")
+        if epub_zf is not None:
+            epub_zf.close()
+        print(f"  Failed to read {kind}: {e}")
         print("")
         return
 
-    total = len(reader.pages)
     print(f"  Loaded: {pdf_path.name}  ({total} pages)")
 
     print("  Enter page ranges separated by commas, e.g. 1-7, 12-13, 27-20")
-    print("  Each range becomes its own PDF. 1-7 keeps page order; 7-1 reverses it.")
+    print(f"  Each range becomes its own {output_name}. 1-7 keeps page order; 7-1 reverses it.")
+    if to_epub and not is_epub:
+        print("  PDF pages will be rendered as images inside each EPUB book.")
     raw = input("Ranges: ").strip()
     if raw == SENTINEL:
+        if epub_zf is not None:
+            epub_zf.close()
         return _cancel()
     if not raw:
+        if epub_zf is not None:
+            epub_zf.close()
         print("  No ranges entered. Aborting.")
         print("")
         return
@@ -2082,6 +2495,8 @@ def pdf_splitter(config, cancel=None):
     if reversed_ranges:
         print(f"  ⚠ Reversed range(s) will be processed in descending order: {', '.join(reversed_ranges)}")
     if not ranges:
+        if epub_zf is not None:
+            epub_zf.close()
         print("  No valid ranges entered. Aborting.")
         print("")
         return
@@ -2092,31 +2507,63 @@ def pdf_splitter(config, cancel=None):
     failed = []
     written = 0
     part_rows = []
-    for i, (a, b, descending) in enumerate(ranges):
-        if cancel and cancel.is_set():
-            print(f"  Cancelled. ({written} part(s) saved so far)")
-            print("")
-            return
-        page_indices = list(range(a - 1, b - 2, -1) if descending else range(a - 1, b))
-        try:
-            writer = PdfWriter()
-            for p in page_indices:
-                writer.add_page(reader.pages[p])
-            out_path = out / f"{stem}_part{i + 1}.pdf"
-            with open(out_path, "wb") as f:
-                writer.write(f)
-            direction = f" (reversed)" if descending else ""
-            part_rows.append(f"    Part {i + 1}/{part_count}: pages {a}–{b}{direction}  →  {out_path.name}")
-            written += 1
-        except OSError as e:
-            if _is_no_space(e):
-                print(f"  ✖ Disk full after {written} part(s). Stopping.")
-                _print_summary(config, copied=written, failed=failed or None, label="parts saved")
+    try:
+        for i, (a, b, descending) in enumerate(ranges):
+            if cancel and cancel.is_set():
+                print(f"  Cancelled. ({written} part(s) saved so far)")
                 print("")
                 return
-            failed.append((pdf_path, f"part {i + 1}: {e}"))
-        except Exception as e:
-            failed.append((pdf_path, f"part {i + 1}: {e}"))
+            page_indices = list(range(a - 1, b - 2, -1) if descending else range(a - 1, b))
+            try:
+                if to_epub:
+                    out_path = out / f"{stem}_part{i + 1}.epub"
+                    if is_epub:
+                        part_pages = [_ZipImage(epub_zf, epub_members[p]) for p in page_indices]
+                        if not build_epub(config, part_pages, out_path,
+                                          f"{stem} - part {i + 1}", cancel, epub_direction):
+                            print(f"  Cancelled. ({written} part(s) saved so far)")
+                            print("")
+                            return
+                    else:
+                        with tempfile.TemporaryDirectory(prefix="tankobon_split_pages_") as page_dir:
+                            part_pages = _render_pdf_pages_as_images(
+                                pdf_path, [p + 1 for p in page_indices], page_dir,
+                                f"part{i + 1:04d}", cancel)
+                            if not build_epub(config, part_pages, out_path,
+                                              f"{stem} - part {i + 1}", cancel):
+                                print(f"  Cancelled. ({written} part(s) saved so far)")
+                                print("")
+                                return
+                elif is_epub:
+                    writer = PdfWriter()
+                    for p in page_indices:
+                        for page in PdfReader(io.BytesIO(_image_to_pdf_bytes(epub_zf.read(epub_members[p])))).pages:
+                            writer.add_page(page)
+                    out_path = out / f"{stem}_part{i + 1}.pdf"
+                    with open(out_path, "wb") as f:
+                        writer.write(f)
+                else:
+                    writer = PdfWriter()
+                    for p in page_indices:
+                        writer.add_page(reader.pages[p])
+                    out_path = out / f"{stem}_part{i + 1}.pdf"
+                    with open(out_path, "wb") as f:
+                        writer.write(f)
+                direction = f" (reversed)" if descending else ""
+                part_rows.append(f"    Part {i + 1}/{part_count}: pages {a}–{b}{direction}  →  {out_path.name}")
+                written += 1
+            except OSError as e:
+                if _is_no_space(e):
+                    print(f"  ✖ Disk full after {written} part(s). Stopping.")
+                    _print_summary(config, copied=written, failed=failed or None, label="parts saved")
+                    print("")
+                    return
+                failed.append((pdf_path, f"part {i + 1}: {e}"))
+            except Exception as e:
+                failed.append((pdf_path, f"part {i + 1}: {e}"))
+    finally:
+        if epub_zf is not None:
+            epub_zf.close()
 
     with _Section(config, f"  Parts ({len(part_rows)})") as s:
         for row in part_rows:
