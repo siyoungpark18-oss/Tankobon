@@ -11,6 +11,8 @@ import hashlib
 import time
 import psutil
 import errno
+import zipfile
+import tempfile
 from pypdf import PdfReader, PdfWriter
 import sys as _sys
 
@@ -67,6 +69,8 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "themes":                     {},
     "preview_limit":              10,     # max lines a Log expansion shows (0 = show everything)
     "show_folder_stats":          True,   # show image count + size next to each folder in the Log
+    "zip_extract_input":          True,   # unpack .zip / .cbz files found in Input before a tool runs
+    "zip_output":                 "off",  # "off" | "zip + folder" | "zip only"
 }
 
 #FUNCTIONS——————————————————————————————————————————————————————————————————————————————————————————————————
@@ -485,12 +489,260 @@ def _get_working_folders(src, use_sort=True):
     return top
 
 
+# ══ ZIP SUPPORT ═══════════════════════════════════════════════════════════════
+# INPUT : every tool unpacks .zip / .cbz files found anywhere in Input (even nested ones) into a
+#         normal folder before it starts, so every tool treats them exactly like folders.
+#         The zip is removed once it has been unpacked (Input only ever holds copies).
+# OUTPUT: with Preferences > Tools > Zip Output turned on, every tool also packs its result
+#         into "<run name>.zip" inside its output folder.
+
+ARCHIVE_EXTENSIONS    = {'.zip', '.cbz'}                       # .cbz (comic book archive) is just a zip
+ZIP_OUTPUT_MODES      = ("off", "zip + folder", "zip only")
+_MAX_ARCHIVE_NESTING  = 3                                      # zip inside zip inside zip ...
+_JUNK_FILES           = {'.ds_store', 'thumbs.db', 'desktop.ini'}
+_ALREADY_COMPRESSED   = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.pdf', '.zip', '.cbz'}
+
+
+def _is_junk_member(parts):
+    last = parts[-1]
+    return "__MACOSX" in parts or last.startswith("._") or last.lower() in _JUNK_FILES
+
+
+def _member_name(info):
+    """The real file name inside a zip. Old zip tools save names in a local encoding (very common
+    for Japanese files) without saying so, and Python would show them as gibberish."""
+    name = info.filename
+    if info.flag_bits & 0x800 or name.isascii():              # 0x800 = the zip says "this is UTF-8"
+        return name
+    try:
+        raw = name.encode("cp437")
+    except UnicodeEncodeError:
+        return name
+    for encoding in ("utf-8", "cp932"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return name
+
+
+def _unique_path(path):
+    if not path.exists():
+        return path
+    n = 2
+    while True:
+        candidate = path.with_name(f"{path.name} ({n})")
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _plan_members(zf, dest):
+    """Works out where every entry goes. Entries that would land OUTSIDE `dest` ("../../x" tricks)
+    are dropped, as is Mac/Windows junk. Returns ([(info, target_path), ...], unsafe_count)."""
+    root = dest.resolve()
+    plan, unsafe = [], 0
+    for info in zf.infolist():
+        parts = [p for p in _member_name(info).replace("\\", "/").split("/") if p not in ("", ".")]
+        if not parts:
+            continue
+        if ".." in parts or re.match(r"^[A-Za-z]:", parts[0]):
+            unsafe += 1
+            continue
+        if _is_junk_member(parts):
+            continue
+        target = dest.joinpath(*parts)
+        try:
+            target.resolve().relative_to(root)
+        except ValueError:
+            unsafe += 1
+            continue
+        plan.append((info, target))
+    return plan, unsafe
+
+
+def _extract_archive(config, archive, cancel=None):
+    """Unpacks one zip next to itself as a folder named after the zip.
+    Everything is unpacked into a hidden temporary folder first, so a failure or a Cancel never
+    leaves a half-unpacked folder behind. A zip that is just one wrapper folder is flattened.
+    Returns (folder, file_count, bytes, unsafe_count), or None if cancelled. Raises on failure."""
+    parent = archive.parent
+    staging = Path(tempfile.mkdtemp(prefix=".tankobon_unzip_", dir=parent))
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            plan, unsafe = _plan_members(zf, staging)
+            files = [(i, t) for i, t in plan if not i.is_dir()]
+            if not files:
+                raise RuntimeError("the zip file contains no files")
+            if any(i.flag_bits & 0x1 for i, _ in files):
+                raise RuntimeError("the zip file is password-protected")
+            need = sum(i.file_size for i, _ in files)
+            reserve = _int_cfg(config, "min_free_gb", 2) * (1024 ** 3)
+            free = shutil.disk_usage(parent).free
+            if need + reserve > free:
+                raise OSError(errno.ENOSPC,
+                              f"not enough disk space to unpack ({_fmt_size(need)} needed, "
+                              f"{_fmt_size(free)} free, minimum free space is set in Preferences)")
+            for info, target in plan:
+                if cancel is not None and cancel.is_set():
+                    return None
+                if info.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as s, open(target, "wb") as d:
+                    shutil.copyfileobj(s, d)
+        kids = list(staging.iterdir())
+        source = kids[0] if len(kids) == 1 and kids[0].is_dir() else staging
+        final = _unique_path(parent / archive.stem)
+        shutil.move(str(source), str(final))
+        return final, len(files), need, unsafe
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def extract_archives(config, src, cancel=None):
+    """Unpacks every .zip / .cbz in Input (and zips inside those). Returns False if cancelled."""
+    if not config.get("zip_extract_input", True):
+        return True
+    rows, failed, attempted = [], [], set()
+    unsafe_total = 0
+
+    def find():
+        return sorted((f for f in src.rglob("*")
+                       if f.is_file() and f.suffix.lower() in ARCHIVE_EXTENSIONS and f not in attempted),
+                      key=lambda x: natural_sort_key(_rel(x, src)))
+
+    for _ in range(_MAX_ARCHIVE_NESTING):
+        archives = find()
+        if not archives:
+            break
+        if not attempted:
+            print(f"  Zip file(s) found in Input. Unpacking...")
+        for archive in archives:
+            attempted.add(archive)
+            if cancel is not None and cancel.is_set():
+                return False
+            throttle_if_needed(config, cancel)
+            try:
+                result = _extract_archive(config, archive, cancel)
+            except zipfile.BadZipFile:
+                failed.append((archive, "not a valid zip file"))
+                continue
+            except OSError as e:
+                failed.append((archive, "disk full" if _is_no_space(e) and not e.strerror else (e.strerror or str(e))))
+                continue
+            except Exception as e:
+                failed.append((archive, str(e)))
+                continue
+            if result is None:
+                return False
+            folder, count, size, unsafe = result
+            unsafe_total += unsafe
+            try:
+                archive.unlink()
+            except OSError as e:
+                failed.append((archive, f"unpacked, but the zip could not be removed: {e}"))
+            rows.append(f"    {_rel(archive, src)}  →  {_rel(folder, src)}/  ({count} file(s), {_fmt_size(size)})")
+
+    for archive in find():                                      # still there after the nesting limit
+        failed.append((archive, f"nested more than {_MAX_ARCHIVE_NESTING} levels deep"))
+
+    if rows:
+        with _Section(config, f"  Unpacked zip files ({len(rows)})") as s:
+            for row in rows:
+                s.add(row)
+    if unsafe_total:
+        print(f"  ⚠ {unsafe_total} unsafe path(s) inside zip files were skipped (they pointed outside the folder).")
+    if rows or failed:
+        _print_summary(config, copied=len(rows), failed=failed or None, label="extracted")
+    return True
+
+
+def zip_output(config, out, cancel=None):
+    """Packs everything in `out` into out/<out name>.zip, if Preferences > Tools > Zip Output asks for it.
+    'zip only' removes the loose files afterwards, but only once the zip has been checked."""
+    mode = config.get("zip_output", "off")
+    if mode not in ZIP_OUTPUT_MODES[1:]:
+        return
+    files = [f for f in out.rglob("*") if f.is_file()]
+    if not files:
+        return
+    files.sort(key=lambda x: natural_sort_key(_rel(x, out)))
+    zip_path = out / f"{out.name}.zip"
+    partial = out / f"{out.name}.zip.partial"
+    total = _total_size(files)
+    try:
+        if total > shutil.disk_usage(out).free:
+            print("  ⚠ Not enough free space to make the zip. The output folder was kept as it is.")
+            return
+    except OSError:
+        pass
+
+    print(f"  Zipping {len(files)} file(s)...")
+    cancelled = False
+    try:
+        with zipfile.ZipFile(partial, "w", allowZip64=True, strict_timestamps=False) as zf:
+            for f in files:
+                if cancel is not None and cancel.is_set():
+                    cancelled = True
+                    break
+                throttle_if_needed(config, cancel)
+                method = zipfile.ZIP_STORED if f.suffix.lower() in _ALREADY_COMPRESSED else zipfile.ZIP_DEFLATED
+                zf.write(f, _rel(f, out).replace(os.sep, "/"), compress_type=method)
+        if cancelled:
+            partial.unlink(missing_ok=True)
+            print("  Zipping cancelled. The output folder was kept as it is.")
+            return
+        if mode == "zip only":
+            with zipfile.ZipFile(partial) as zf:                 # never delete originals before the zip is proven good
+                bad = zf.testzip()
+            if bad:
+                raise RuntimeError(f"zip check failed on '{bad}'")
+        os.replace(partial, zip_path)
+    except Exception as e:
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if _is_no_space(e):
+            print("  ✖ Disk full — could not make the zip. The output folder was kept as it is.")
+        else:
+            print(f"  ✖ Could not make the zip: {e}. The output folder was kept as it is.")
+        return
+
+    print(f"  Saved: {zip_path.name}  ({len(files)} file(s), {_fmt_size(zip_path.stat().st_size)})")
+
+    if mode == "zip only":
+        left = 0
+        for f in files:
+            try:
+                f.unlink()
+            except OSError:
+                left += 1
+        for d in sorted((p for p in out.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        print("  Zip only: loose files removed from the output folder." if not left
+              else f"  ⚠ Zip only: {left} loose file(s) could not be removed.")
+
+
+def _finalize_output(config, out, cancel=None):
+    """The last step of every successful tool: zip the result (if wanted), then clear Input (if wanted)."""
+    zip_output(config, out, cancel)
+    do_auto_clear(config)
+
+
 def folders_to_pdf(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
     print("Folders to PDF")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -550,7 +802,7 @@ def folders_to_pdf(config, cancel=None):
                     return
                 raise
             _print_summary(config, copied=len(all_paths), skipped=all_skipped or None, label="converted")
-            do_auto_clear(config)
+            _finalize_output(config, out, cancel)
             print(f"  Done! → {out}")
             print("")
         else:
@@ -597,7 +849,7 @@ def folders_to_pdf(config, cancel=None):
                         return
                     print(f"  Failed to save {safe_name}.pdf: {e}")
         _print_summary(config, copied=total_converted, skipped=total_skipped or None, label="PDFs saved")
-        do_auto_clear(config)
+        _finalize_output(config, out, cancel)
         print(f"  Done! → {out}")
         print("")
 
@@ -608,6 +860,8 @@ def images_to_pdf(config, cancel=None):
 
     print("Images to PDF")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -715,7 +969,7 @@ def images_to_pdf(config, cancel=None):
         print(f"  ⚠ {len(out_of_range)} invalid or out-of-range index/indices skipped: {', '.join(out_of_range)}")
 
     _print_summary(config, copied=len(final_files), skipped=skipped or None, label="converted")
-    do_auto_clear(config)
+    _finalize_output(config, out, cancel)
     print(f"  Done! → {out}")
     print("")
 
@@ -726,6 +980,8 @@ def folder_renamer(config, cancel=None):
 
     print("Folder Renamer")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -842,7 +1098,7 @@ def folder_renamer(config, cancel=None):
 
     _print_summary(config, copied=copied, failed=failed or None,
                    skipped=skipped or None, label="renamed")
-    do_auto_clear(config)
+    _finalize_output(config, out, cancel)
     print(f"  Done! → {out}")
     print("")
 
@@ -853,6 +1109,8 @@ def file_renamer(config, cancel=None):
 
     print("File Renamer")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -965,7 +1223,7 @@ def file_renamer(config, cancel=None):
             failed.append((old, str(e)))
 
     _print_summary(config, copied=copied, failed=failed or None, label="renamed")
-    do_auto_clear(config)
+    _finalize_output(config, out, cancel)
     print(f"  Done! → {out}")
     print("")
 
@@ -976,6 +1234,8 @@ def combine_image_sets(config, cancel=None):
 
     print("Combine Image Sets")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -1057,7 +1317,7 @@ def combine_image_sets(config, cancel=None):
 
     _print_summary(config, copied=counter - 1, failed=total_failed or None,
                    skipped=total_skipped or None, label="combined")
-    do_auto_clear(config)
+    _finalize_output(config, out, cancel)
     print(f"  Total: {counter - 1} images combined.")
     print(f"  Done! → {out}")
     print("")
@@ -1069,6 +1329,8 @@ def image_converter(config, cancel=None):
 
     print("Image Converter")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -1172,7 +1434,7 @@ def image_converter(config, cancel=None):
 
     _print_summary(config, copied=converted + copied, failed=failed or None,
                    skipped=skipped or None, label="converted")
-    do_auto_clear(config)
+    _finalize_output(config, out, cancel)
     print(f"  Done! → {out}")
     print("")
 
@@ -1183,6 +1445,8 @@ def find_duplicates(config, cancel=None):
 
     print("Find Duplicates")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -1339,7 +1603,7 @@ def find_duplicates(config, cancel=None):
 
     _print_summary(config, copied=copied, failed=failed or None,
                    skipped=skipped or None, label="copied")
-    do_auto_clear(config)
+    _finalize_output(config, out, cancel)
     print(f"  Done! → {out}")
     print("")
 
@@ -1350,6 +1614,8 @@ def pdf_combiner(config, cancel=None):
 
     print("PDF Combiner")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -1422,7 +1688,7 @@ def pdf_combiner(config, cancel=None):
 
     _print_summary(config, copied=len(pdfs) - len(failed), failed=failed or None,
                    skipped=skipped or None, label="combined")
-    do_auto_clear(config)
+    _finalize_output(config, out, cancel)
     print(f"  Done! → {out}")
     print("")
 
@@ -1441,6 +1707,8 @@ def pdf_to_images(config, cancel=None):
 
     print("PDF to Images")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -1558,7 +1826,7 @@ def pdf_to_images(config, cancel=None):
 
     _print_summary(config, copied=total_pages, failed=failed or None,
                    skipped=skipped or None, label="pages exported")
-    do_auto_clear(config)
+    _finalize_output(config, out, cancel)
     print(f"  Total: {len(pdfs)} PDF(s), {total_pages} page(s) exported.")
     print(f"  Done! → {out}")
     print("")
@@ -1570,6 +1838,8 @@ def pdf_splitter(config, cancel=None):
 
     print("PDF Splitter")
     print(f"  Input:  {src}")
+    if not extract_archives(config, src, cancel):
+        return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
@@ -1680,7 +1950,7 @@ def pdf_splitter(config, cancel=None):
         for row in part_rows:
             s.add(row)
     _print_summary(config, copied=written, failed=failed or None, label="parts saved")
-    do_auto_clear(config)
+    _finalize_output(config, out, cancel)
     print(f"  Done! {written} part(s) saved.")
     print(f"  → {out}")
     print("")
@@ -1716,7 +1986,8 @@ def status(config):
                 print(f"  [folder] {d.name}/  ({file_count} file(s))")
 
         for f in sorted(files, key=lambda x: natural_sort_key(x.name)):
-            print(f"  [file]   {f.name}")
+            tag = "[zip]   " if f.suffix.lower() in ARCHIVE_EXTENSIONS else "[file]  "
+            print(f"  {tag} {f.name}")
     else:
         print("Input  —  (doesn't exist)")
 
@@ -1752,6 +2023,9 @@ def info():
 
 -- Other --
 'status'  'exit'
+
+Zip files (.zip / .cbz) in Input are unpacked automatically.
+Set "zip_output" in the config to also get the result as a zip.
 
 All output goes to output/
 """)
