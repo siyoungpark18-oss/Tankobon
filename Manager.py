@@ -65,6 +65,8 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "show_tooltips":              True,
     "allow_concurrent_jobs":      False,
     "themes":                     {},
+    "preview_limit":              10,     # max lines a Log expansion shows (0 = show everything)
+    "show_folder_stats":          True,   # show image count + size next to each folder in the Log
 }
 
 #FUNCTIONS——————————————————————————————————————————————————————————————————————————————————————————————————
@@ -165,8 +167,8 @@ def throttle_if_needed(config, cancel=None):
     it only really measures twice a second, and it does not block while measuring.
     If `cancel` is set the pause ends immediately so the job can stop."""
     global _last_throttle_check
-    cpu_limit = config.get("throttle_cpu", 80)
-    mem_limit = config.get("throttle_mem", 80)
+    cpu_limit = _int_cfg(config, "throttle_cpu", 80)
+    mem_limit = _int_cfg(config, "throttle_mem", 80)
     if cpu_limit == 0 and mem_limit == 0:
         return
     now = time.monotonic()
@@ -202,7 +204,7 @@ def _check_disk_space(path, config=None):
     try:
         usage = shutil.disk_usage(path)
         free_gb = usage.free / (1024 ** 3)
-        min_gb = config.get("min_free_gb", 2) if config else 2
+        min_gb = _int_cfg(config, "min_free_gb", 2) if config else 2
         if free_gb < min_gb:
             print(f"  ✖ Not enough disk space: {free_gb:.1f} GB free (minimum: {min_gb} GB).")
             print(f"    Free up space or lower the minimum in Preferences (≡).")
@@ -228,7 +230,6 @@ def _is_no_space(e):
 
 
 def collect_image_paths(folder, image_extensions, sub_print=None, use_sort=True):
-    _print = sub_print if sub_print is not None else print
     paths = []
     skipped = []
     items = sorted(folder.iterdir(), key=lambda x: natural_sort_key(x.name)) if use_sort else list(folder.iterdir())
@@ -242,8 +243,8 @@ def collect_image_paths(folder, image_extensions, sub_print=None, use_sort=True)
             sub_paths, sub_skipped = collect_image_paths(item, image_extensions, sub_print, use_sort)
             paths.extend(sub_paths)
             skipped.extend(sub_skipped)
-            if sub_paths:
-                _print(f"    {item.name}/  →  {len(sub_paths)} image(s)")
+            if sub_paths and sub_print:
+                sub_print(f"    {item.name}/  →  {len(sub_paths)} image(s)")
     return paths, skipped
 
 
@@ -284,7 +285,7 @@ def _cancel():
     print("")
 
 
-def _warn_name_collisions(preview):
+def _warn_name_collisions(config, preview):
     """preview = [(old_path, new_path), ...]. Warn if two items would end up with the same new name."""
     users = {}
     for old, new in preview:
@@ -293,36 +294,26 @@ def _warn_name_collisions(preview):
     if not clashes:
         return
     print(f"  ⚠ {len(clashes)} new name(s) would be used more than once. Later items overwrite earlier ones!")
-    start_section, end_section = _get_log_section_fns()
-    start_section(f"  Name clashes ({len(clashes)})")
-    for new, olds in clashes.items():
-        print(f"    {new.name}  ←  " + ",  ".join(o.name for o in olds))
-    end_section()
+    with _Section(config, f"  Name clashes ({len(clashes)})") as s:
+        for new, olds in clashes.items():
+            s.add(f"    {new.name}  ←  " + ",  ".join(o.name for o in olds))
 
 
-def _print_summary(copied=0, failed=None, skipped=None, label="processed"):
-    start_section, end_section = _get_log_section_fns()
+def _print_summary(config, copied=0, failed=None, skipped=None, label="processed"):
     parts = [f"  {label}: {copied}"]
     if failed:
         parts.append(f"Failed: {len(failed)}")
     if skipped:
         parts.append(f"Skipped: {len(skipped)}")
     print("  " + "   ".join(parts))
-    if failed:
-        start_section(f"  Failed files ({len(failed)})")
-        for p, reason in failed:
-            print(f"    {p.name}: {reason}")
-        end_section()
+    if failed:                                  # failures are never truncated: you need to see all of them
+        with _Section(config, f"  Failed files ({len(failed)})", unlimited=True) as s:
+            for p, reason in failed:
+                s.add(f"    {p.name}: {reason}")
     if skipped:
-        non_type_skips = [(p, r) for p, r in skipped if r != "unsupported type"]
-        if non_type_skips:
-            start_section(f"  Skipped files ({len(non_type_skips)})")
-            for p, reason in non_type_skips:
-                print(f"    {p.name}: {reason}")
-            end_section()
-        type_skips = len(skipped) - len(non_type_skips)
-        if type_skips:
-            print(f"  {type_skips} file(s) skipped (unsupported type)")
+        with _Section(config, f"  Skipped files ({len(skipped)})") as s:
+            for p, reason in skipped:
+                s.add(f"    {p.name}: {reason}")
 
 
 def _get_log_section_fns():
@@ -331,6 +322,155 @@ def _get_log_section_fns():
     if hasattr(log, 'start_section') and hasattr(log, 'end_section'):
         return log.start_section, log.end_section
     return lambda header: None, lambda: None
+
+
+# ══ LOG EXPANSION FRAMEWORK ═══════════════════════════════════════════════════
+# Every tool describes what it is working on the same way:
+#   [Folder]  12 image(s)  ·  34.5 MB          <- always visible (the ▶ header)
+#       page01.jpg                              <- shown when expanded, at most
+#       page02.jpg                                 "preview_limit" lines, then
+#       … and 40 more                              "… and N more"
+# and a tool's own preview ("Preview", "Excluding", "Pages per PDF", ...) uses the same
+# limited list. Both are controlled from Preferences.
+
+DEFAULT_PREVIEW_LIMIT = 10
+ROOT_LABEL = "(Input root)"          # label for files that sit directly in Input, not in a folder
+
+
+def _int_cfg(config, key, default):
+    """Read a whole number from the config. Anything unusable (text, blank, a hand-edited file) gives `default`."""
+    try:
+        return int(str(config.get(key, default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def get_preview_limit(config):
+    """How many lines a Log expansion may show. 0 means unlimited. Bad values fall back to 10."""
+    n = _int_cfg(config, "preview_limit", DEFAULT_PREVIEW_LIMIT)
+    return n if n >= 0 else DEFAULT_PREVIEW_LIMIT
+
+
+def _fmt_size(num_bytes):
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def _total_size(files):
+    total = 0
+    for f in files:
+        try:
+            total += f.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _size_suffix(config, files):
+    """'  ·  34.5 MB', or '' when folder stats are switched off in Preferences."""
+    if not config.get("show_folder_stats", True):
+        return ""
+    return f"  ·  {_fmt_size(_total_size(files))}"
+
+
+def _stats_text(config, files, noun):
+    if not config.get("show_folder_stats", True):
+        return ""
+    return f"  {len(files)} {noun}(s){_size_suffix(config, files)}"
+
+
+def _rel(path, base):
+    try:
+        return str(path.relative_to(base))
+    except (ValueError, TypeError):
+        return path.name
+
+
+class _Section:
+    """A collapsible Log section that lists at most `preview_limit` lines, then '… and N more'.
+
+        with _Section(config, "  Preview (120)") as s:
+            for ... : s.add("    a  →  b")
+
+    Do NOT print anything else while one is open: it would be hidden inside the section.
+    Outside the GUI (plain console) the header is simply printed as a normal line."""
+
+    def __init__(self, config, header, unlimited=False):
+        self.limit = 0 if unlimited else get_preview_limit(config)
+        self.shown = 0
+        self.extra = 0
+        start, self._end = _get_log_section_fns()
+        if not hasattr(_sys.stdout, "start_section"):
+            print(header)
+        start(header)
+
+    def add(self, line, preview_path=None):
+        if self.limit and self.shown >= self.limit:
+            self.extra += 1
+            return
+        self.shown += 1
+        log = _sys.stdout
+        if preview_path is not None and hasattr(log, "write_with_preview"):
+            log.write_with_preview(line, preview_path)
+        else:
+            print(line)
+
+    def close(self):
+        if self.extra:
+            print(f"    … and {self.extra} more  (list size is set in Preferences)")
+        self._end()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def _log_group(config, label, files, base=None, noun="image", extra="", names=None,
+               numbers=None, unlimited=False):
+    """One folder in the Log: a header with the count and size, and the file names when expanded.
+    A group with nothing to list is a plain line, so there is never an expander that opens onto nothing."""
+    header = f"  [{label}]{_stats_text(config, files, noun)}{extra}"
+    lines = names if names is not None else [_rel(f, base) if base else f.name for f in files]
+    if not lines:
+        print(header)
+        return
+    with _Section(config, header, unlimited) as s:
+        for i, line in enumerate(lines):
+            s.add(f"    {numbers[i]}. {line}" if numbers else f"    {line}")
+
+
+def _group_by_top_folder(files, src):
+    """[(label, files, base_folder), ...] using the first folder level under Input."""
+    groups = {}
+    for f in files:
+        parts = f.relative_to(src).parts
+        groups.setdefault(parts[0] if len(parts) > 1 else ROOT_LABEL, []).append(f)
+    return [(label, fl, src if label == ROOT_LABEL else src / label) for label, fl in groups.items()]
+
+
+def _log_scan(config, files, src, noun="image", numbering=None, details=None):
+    """Show every folder the tool is working with, using the shared format.
+    numbering = {path: number} prints '12. name' and lists everything (needed to pick files by number).
+    details   = {path: text}   appends '  —  text' to a file's line."""
+    if numbering is None and resolve_sort(config):          # keep the display in natural order (numbered lists keep their numbers)
+        files = sorted(files, key=lambda x: natural_sort_key(_rel(x, src)))
+    groups = _group_by_top_folder(files, src)
+    for label, fl, base in groups:
+        names = [_rel(f, base) + (f"  —  {details[f]}" if details and f in details else "") for f in fl]
+        numbers, extra = None, ""
+        if numbering:
+            numbers = [numbering[f] for f in fl]
+            if numbers == list(range(numbers[0], numbers[0] + len(numbers))):   # consecutive: show the range
+                extra = f"  ·  #{numbers[0]}–#{numbers[-1]}"
+        _log_group(config, label, fl, base, noun=noun, names=names, numbers=numbers, extra=extra)
+    if len(groups) > 1:
+        print(f"  Total: {len(files)} {noun}(s) in {len(groups)} folder(s){_size_suffix(config, files)}")
 
 
 def _get_working_folders(src, use_sort=True):
@@ -365,6 +505,8 @@ def folders_to_pdf(config, cancel=None):
         if raw == SENTINEL:
             return _cancel()
         mode = "individual" if raw == "2" else "combine"
+    elif mode not in ("combine", "individual"):
+        mode = "combine"                                  # unusable saved value: fall back to the default
     print(f"  Mode: {mode}")
     print(f"  Note: cannot be cancelled once PDF conversion starts.")
 
@@ -381,26 +523,22 @@ def folders_to_pdf(config, cancel=None):
 
     print(f"  Found {len(folders)} folder(s). Scanning...")
 
-    start_section, end_section = _get_log_section_fns()
-
     if mode == "combine":
         all_paths = []
         all_skipped = []
-        for i, folder in enumerate(folders):
+        for folder in folders:
             if cancel and cancel.is_set():
                 print("  Cancelled.")
                 print("")
                 return
             throttle_if_needed(config, cancel)
-            start_section(f"[{folder.name}]")
-            paths, skipped = collect_image_paths(folder, IMAGE_EXTENSIONS, sub_print=print, use_sort=use_sort)
-            end_section()
+            paths, skipped = collect_image_paths(folder, IMAGE_EXTENSIONS, use_sort=use_sort)
+            _log_group(config, folder.name, paths, folder,
+                       extra=f"  ·  {len(skipped)} skipped" if skipped else "")
             all_paths.extend(paths)
             all_skipped.extend(skipped)
-            print(f"  [{folder.name}]  {len(paths)} image(s)"
-                  + (f"  {len(skipped)} skipped" if skipped else ""))
 
-        print(f"  Total: {len(all_paths)} images across {len(folders)} folders")
+        print(f"  Total: {len(all_paths)} images across {len(folders)} folders{_size_suffix(config, all_paths)}")
 
         if all_paths:
             try:
@@ -411,14 +549,14 @@ def folders_to_pdf(config, cancel=None):
                     print("")
                     return
                 raise
-            _print_summary(copied=len(all_paths), skipped=all_skipped or None, label="converted")
+            _print_summary(config, copied=len(all_paths), skipped=all_skipped or None, label="converted")
             do_auto_clear(config)
             print(f"  Done! → {out}")
             print("")
         else:
             print("  No images found in any folder.")
             if all_skipped:
-                _print_summary(skipped=all_skipped)
+                _print_summary(config, skipped=all_skipped)
             print("")
 
     else:
@@ -435,23 +573,19 @@ def folders_to_pdf(config, cancel=None):
                 key=lambda x: natural_sort_key(x.name)
             ) if use_sort else [f for f in folder.iterdir() if f.is_dir()]
             units = subfolders if subfolders else [folder]
-            start_section(f"[{folder.name}]")
-            folder_skipped = []
             unit_data = []
             for unit in units:
-                paths, skipped = collect_image_paths(unit, IMAGE_EXTENSIONS, sub_print=print, use_sort=use_sort)
-                folder_skipped.extend(skipped)
-                skip_str = f"  {len(skipped)} skipped" if skipped else ""
-                print(f"    {unit.name}/  →  {len(paths)} image(s){skip_str}")
-                unit_data.append((unit, paths, skipped))
-            total_img = sum(len(p) for _, p, _ in unit_data)
-            skip_total = f"  {len(folder_skipped)} skipped" if folder_skipped else ""
-            print(f"  [{folder.name}]  {total_img} image(s){skip_total}")
-            end_section()
-            for unit, paths, skipped in unit_data:
+                paths, skipped = collect_image_paths(unit, IMAGE_EXTENSIONS, use_sort=use_sort)
+                total_skipped.extend(skipped)
+                safe_name = re.sub(r'[^\w\s\-.]', '', unit.name).strip() or unit.name
+                label = unit.name if unit is folder else f"{folder.name} / {unit.name}"
+                extra = (f"  ·  {len(skipped)} skipped" if skipped else "") + \
+                        (f"  →  {safe_name}.pdf" if paths else "")
+                _log_group(config, label, paths, unit, extra=extra)
+                unit_data.append((safe_name, paths))
+            for safe_name, paths in unit_data:
                 if not paths:
                     continue
-                safe_name = re.sub(r'[^\w\s\-.]', '', unit.name).strip() or unit.name
                 pdf_path = out / f"{safe_name}.pdf"
                 try:
                     save_pdf(paths, pdf_path)
@@ -462,8 +596,7 @@ def folders_to_pdf(config, cancel=None):
                         print("")
                         return
                     print(f"  Failed to save {safe_name}.pdf: {e}")
-            total_skipped.extend(folder_skipped)
-        _print_summary(copied=total_converted, skipped=total_skipped or None, label="PDFs saved")
+        _print_summary(config, copied=total_converted, skipped=total_skipped or None, label="PDFs saved")
         do_auto_clear(config)
         print(f"  Done! → {out}")
         print("")
@@ -504,14 +637,14 @@ def images_to_pdf(config, cancel=None):
     if not image_files:
         print("  No images found in Input!")
         if skipped:
-            _print_summary(skipped=skipped)
+            _print_summary(config, skipped=skipped)
         print("")
         return
 
     from collections import Counter
     ext_counts = Counter(f.suffix.lower() for f in image_files)
     summary = "  ".join(f"{v}× {k}" for k, v in sorted(ext_counts.items()))
-    print(f"  Found {len(image_files)} images:  {summary}")
+    print(f"  Found {len(image_files)} images:  {summary}{_size_suffix(config, image_files)}")
 
     mode = config.get("default_images_to_pdf_mode", "ask")
     if mode == "ask":
@@ -519,14 +652,16 @@ def images_to_pdf(config, cancel=None):
         if raw == SENTINEL:
             return _cancel()
         mode = "reorder & combine" if raw == "2" else "combine"
+    elif mode not in ("combine", "reorder & combine"):
+        mode = "combine"                                  # unusable saved value: fall back to the default
     print(f"  Mode: {mode}")
 
     if mode == "reorder & combine":
-        start_section, end_section = _get_log_section_fns()
-        start_section(f"  File numbers ({len(image_files)}) - expand to see which number is which file")
-        for n, f in enumerate(image_files, 1):
-            print(f"    {n}. {f.relative_to(src)}")
-        end_section()
+        # One expander PER FOLDER. Lists follow the preview size; each header shows its number range
+        # (e.g. #26–#29) so you can still tell which number is which file when names are hidden.
+        numbering = {f: n for n, f in enumerate(image_files, 1)}
+        print("  Expand a folder to see which number is which file. Numbers run in order; each folder's range is in its header.")
+        _log_scan(config, image_files, src, numbering=numbering)
         print(f"  Enter file numbers (1–{len(image_files)}) separated by commas.")
         print(f"  Leave blank to use all files in default order.")
         raw = input("Order: ").strip()
@@ -558,6 +693,7 @@ def images_to_pdf(config, cancel=None):
 
             print(f"  Using {len(final_files)} file(s) in specified order.")
     else:
+        _log_scan(config, image_files, src)
         final_files = image_files
         out_of_range = []
 
@@ -578,11 +714,10 @@ def images_to_pdf(config, cancel=None):
     if out_of_range:
         print(f"  ⚠ {len(out_of_range)} invalid or out-of-range index/indices skipped: {', '.join(out_of_range)}")
 
-    _print_summary(copied=len(final_files), skipped=skipped or None, label="converted")
+    _print_summary(config, copied=len(final_files), skipped=skipped or None, label="converted")
     do_auto_clear(config)
     print(f"  Done! → {out}")
     print("")
-
 
 
 def folder_renamer(config, cancel=None):
@@ -609,6 +744,11 @@ def folder_renamer(config, cancel=None):
         return
 
     print(f"  Found {len(folders)} folder(s).")
+    for folder in folders:
+        folder_files = [f for f in folder.rglob("*") if f.is_file()]
+        if use_sort:
+            folder_files.sort(key=lambda x: natural_sort_key(_rel(x, folder)))
+        _log_group(config, folder.name, folder_files, folder, noun="file")
     mode = config.get("default_folder_renamer_mode", "ask")
     if mode == "ask":
         print("  Modes: 1=Prefix  2=Suffix  3=Replace  4=Extract Number")
@@ -616,6 +756,9 @@ def folder_renamer(config, cancel=None):
         if mode == SENTINEL:
             return _cancel()
         mode = {"1": "prefix", "2": "suffix", "3": "replace", "4": "extract number"}.get(mode, mode)
+    if mode not in ("prefix", "suffix", "replace", "extract number"):
+        print(f"  ⚠ '{mode}' is not a valid mode. Using the default (extract number).")
+        mode = "extract number"
     print(f"  Mode: {mode}")
 
     preview = []
@@ -670,12 +813,10 @@ def folder_renamer(config, cancel=None):
         return
 
     print(f"  {len(preview)} folder(s) to rename{f', {len(skipped)} skipped' if skipped else ''}.")
-    _warn_name_collisions(preview)
-    start_section, end_section = _get_log_section_fns()
-    start_section(f"  Preview ({len(preview)})")
-    for old, new in preview:
-        print(f"    {old.name}  →  {new.name}")
-    end_section()
+    _warn_name_collisions(config, preview)
+    with _Section(config, f"  Preview ({len(preview)})") as s:
+        for old, new in preview:
+            s.add(f"    {old.name}  →  {new.name}")
 
     failed = []
     copied = 0
@@ -691,7 +832,7 @@ def folder_renamer(config, cancel=None):
         except OSError as e:
             if _is_no_space(e):
                 print(f"  ✖ Disk full after {copied} folder(s). Stopping.")
-                _print_summary(copied=copied, failed=failed or None,
+                _print_summary(config, copied=copied, failed=failed or None,
                                skipped=skipped or None, label="renamed")
                 print("")
                 return
@@ -699,7 +840,7 @@ def folder_renamer(config, cancel=None):
         except Exception as e:
             failed.append((old, str(e)))
 
-    _print_summary(copied=copied, failed=failed or None,
+    _print_summary(config, copied=copied, failed=failed or None,
                    skipped=skipped or None, label="renamed")
     do_auto_clear(config)
     print(f"  Done! → {out}")
@@ -731,7 +872,8 @@ def file_renamer(config, cancel=None):
         print("")
         return
 
-    print(f"  Found {len(items)} file(s).")
+    print(f"  Found {len(items)} file(s){_size_suffix(config, items)}")
+    _log_scan(config, items, src, noun="file")
     mode = config.get("default_file_renamer_mode", "ask")
     if mode == "ask":
         print("  Modes: 1=Prefix  2=Suffix  3=Replace  4=Sequence")
@@ -773,13 +915,19 @@ def file_renamer(config, cancel=None):
         pad = input("Pad digits (default 3): ").strip()
         if pad == SENTINEL:
             return _cancel()
-        try:
-            start = int(start) if start else 1
-            pad   = int(pad)   if pad   else 3
-        except ValueError:
-            print("  Start number and pad digits must be whole numbers.")
-            print("")
-            return
+        def _whole_number(text, default, what):
+            if not text:
+                return default
+            try:
+                n = int(text)
+                if n < 0:
+                    raise ValueError
+                return n
+            except ValueError:
+                print(f"  ⚠ '{text}' is not a valid {what}. Using the default ({default}).")
+                return default
+        start = _whole_number(start, 1, "start number")
+        pad   = _whole_number(pad,   3, "number of digits")
         def _seq_name(base, i, ext):
             num = str(start + i).zfill(pad)
             return f"{base}{num}{ext}" if base else f"{num}{ext}"
@@ -790,12 +938,10 @@ def file_renamer(config, cancel=None):
         print("")
         return
 
-    _warn_name_collisions(preview)
-    start_section, end_section = _get_log_section_fns()
-    start_section(f"  Preview ({len(preview)})")
-    for old, new in preview:
-        print(f"    {old.name}  →  {new.name}")
-    end_section()
+    _warn_name_collisions(config, preview)
+    with _Section(config, f"  Preview ({len(preview)})") as s:
+        for old, new in preview:
+            s.add(f"    {old.name}  →  {new.name}")
 
     copied = 0
     failed = []
@@ -811,14 +957,14 @@ def file_renamer(config, cancel=None):
         except OSError as e:
             if _is_no_space(e):
                 print(f"  ✖ Disk full after {copied} file(s). Stopping.")
-                _print_summary(copied=copied, failed=failed or None, label="renamed")
+                _print_summary(config, copied=copied, failed=failed or None, label="renamed")
                 print("")
                 return
             failed.append((old, str(e)))
         except Exception as e:
             failed.append((old, str(e)))
 
-    _print_summary(copied=copied, failed=failed or None, label="renamed")
+    _print_summary(config, copied=copied, failed=failed or None, label="renamed")
     do_auto_clear(config)
     print(f"  Done! → {out}")
     print("")
@@ -871,8 +1017,6 @@ def combine_image_sets(config, cancel=None):
     total_skipped = []
     total_failed = []
 
-    start_section, end_section = _get_log_section_fns()
-
     for folder in folders:
         if cancel and cancel.is_set():
             print(f"  Cancelled. ({counter - 1} images combined so far)")
@@ -881,13 +1025,20 @@ def combine_image_sets(config, cancel=None):
         throttle_if_needed(config, cancel)
         subfolders = sorted([f for f in folder.iterdir() if f.is_dir()],
                             key=lambda x: natural_sort_key(x.name)) if use_sort else [f for f in folder.iterdir() if f.is_dir()]
-        targets = [(f"{sub.name}", sub) for sub in subfolders] if subfolders else [(folder.name, folder)]
+        targets = [(sub.name, sub) for sub in subfolders] if subfolders else [(folder.name, folder)]
 
-        start_section(f"[{folder.name}]")
         for label, target in targets:
             images, skipped = collect_images(target)
             total_skipped.extend(skipped)
-            start_idx = counter
+
+            # Show this set (count, size, and each image with the number it will get) BEFORE copying it.
+            first = counter
+            names = [f"{_rel(img, target)}  →  {str(first + i).zfill(4)}{img.suffix}" for i, img in enumerate(images)]
+            extra = (f"  ·  {len(skipped)} skipped" if skipped else "") + \
+                    (f"  →  {str(first).zfill(4)}–{str(first + len(images) - 1).zfill(4)}" if images else "")
+            _log_group(config, label if target is folder else f"{folder.name} / {label}",
+                       images, target, names=names, extra=extra)
+
             for img in images:
                 dest = out / f"{str(counter).zfill(4)}{img.suffix}"
                 try:
@@ -895,19 +1046,16 @@ def combine_image_sets(config, cancel=None):
                     counter += 1
                 except OSError as e:
                     if _is_no_space(e):
-                        end_section()
                         print(f"  ✖ Disk full after {counter - 1} image(s). Stopping.")
-                        _print_summary(copied=counter - 1, failed=total_failed or None,
+                        _print_summary(config, copied=counter - 1, failed=total_failed or None,
                                        skipped=total_skipped or None, label="combined")
                         print("")
                         return
                     total_failed.append((img, str(e)))
                 except Exception as e:
                     total_failed.append((img, str(e)))
-            print(f"    [{label}]  {len(images)} image(s)  →  {str(start_idx).zfill(4)}–{str(counter - 1).zfill(4)}")
-        end_section()
 
-    _print_summary(copied=counter - 1, failed=total_failed or None,
+    _print_summary(config, copied=counter - 1, failed=total_failed or None,
                    skipped=total_skipped or None, label="combined")
     do_auto_clear(config)
     print(f"  Total: {counter - 1} images combined.")
@@ -933,9 +1081,8 @@ def image_converter(config, cancel=None):
         fmt = raw.lower() or "jpg"
     fmt = {"jpeg": "jpg", "tif": "tiff"}.get(fmt, fmt)
     if fmt not in ("jpg", "png", "webp", "bmp", "tiff"):
-        print(f"  Unknown format '{fmt}'. Choose jpg, png, webp, bmp or tiff.")
-        print("")
-        return
+        print(f"  ⚠ Unknown format '{fmt}'. Using the default (jpg).")
+        fmt = "jpg"
     print(f"  Format: {fmt}")
 
     pillow_fmt = "JPEG" if fmt == "jpg" else fmt.upper()
@@ -967,14 +1114,15 @@ def image_converter(config, cancel=None):
     if not images:
         print("  No images found in Input!")
         if skipped:
-            _print_summary(skipped=skipped)
+            _print_summary(config, skipped=skipped)
         print("")
         return
 
     from collections import Counter
     ext_counts = Counter(f.suffix.lower() for f in images)
     summary = "  ".join(f"{v}× {k}" for k, v in sorted(ext_counts.items()))
-    print(f"  Found {len(images)} images:  {summary}")
+    print(f"  Found {len(images)} images:  {summary}{_size_suffix(config, images)}")
+    _log_scan(config, images, src)
     print(f"  Converting all → {ext} ...")
 
     converted = copied = 0
@@ -997,7 +1145,7 @@ def image_converter(config, cancel=None):
             except OSError as e:
                 if _is_no_space(e):
                     print(f"  ✖ Disk full after {converted + copied} image(s). Stopping.")
-                    _print_summary(copied=converted + copied, failed=failed or None,
+                    _print_summary(config, copied=converted + copied, failed=failed or None,
                                    skipped=skipped or None, label="converted")
                     print("")
                     return
@@ -1014,7 +1162,7 @@ def image_converter(config, cancel=None):
             except OSError as e:
                 if _is_no_space(e):
                     print(f"  ✖ Disk full after {converted + copied} image(s). Stopping.")
-                    _print_summary(copied=converted + copied, failed=failed or None,
+                    _print_summary(config, copied=converted + copied, failed=failed or None,
                                    skipped=skipped or None, label="converted")
                     print("")
                     return
@@ -1022,7 +1170,7 @@ def image_converter(config, cancel=None):
             except Exception as e:
                 failed.append((img_path, str(e)))
 
-    _print_summary(copied=converted + copied, failed=failed or None,
+    _print_summary(config, copied=converted + copied, failed=failed or None,
                    skipped=skipped or None, label="converted")
     do_auto_clear(config)
     print(f"  Done! → {out}")
@@ -1063,6 +1211,15 @@ def find_duplicates(config, cancel=None):
     if use_sort:
         all_files = sorted(all_files, key=lambda x: natural_sort_key(x.name))
 
+    if not all_files:
+        print("  No images found in Input!")
+        if skipped:
+            _print_summary(config, skipped=skipped)
+        print("")
+        return
+    print(f"  Found {len(all_files)} image(s){_size_suffix(config, all_files)}")
+    _log_scan(config, all_files, src)
+
     hash_failed = []
     duplicates  = set()
     dup_groups  = []
@@ -1094,7 +1251,7 @@ def find_duplicates(config, cancel=None):
 
     else:
         import imagehash
-        PHASH_THRESHOLD = config.get("phash_threshold", 4)
+        PHASH_THRESHOLD = _int_cfg(config, "phash_threshold", 4)
         print(f"  Scanning {len(all_files)} image(s) (threshold={PHASH_THRESHOLD})...")
 
         file_phashes = {}
@@ -1128,7 +1285,7 @@ def find_duplicates(config, cancel=None):
 
     if not duplicates:
         print(f"  No duplicates found across {len(all_files)} images.")
-        _print_summary(copied=len(all_files), failed=hash_failed or None,
+        _print_summary(config, copied=len(all_files), failed=hash_failed or None,
                        skipped=skipped or None, label="scanned")
         print("")
         return
@@ -1141,6 +1298,9 @@ def find_duplicates(config, cancel=None):
         if mode == SENTINEL:
             return _cancel()
         mode = {"1": "keep one copy", "2": "delete all"}.get(mode, mode)
+    if mode not in ("keep one copy", "delete all"):
+        print(f"  ⚠ '{mode}' is not a valid mode. Using the default (keep one copy).")
+        mode = "keep one copy"
     print(f"  Mode: {mode}")
 
     if mode == "delete all":
@@ -1152,16 +1312,9 @@ def find_duplicates(config, cancel=None):
         print("")
         return
 
-    import sys as _sys
-    log = _sys.stdout
-    start_section, end_section = _get_log_section_fns()
-    start_section(f"  Excluding ({len(exclude)}) — expand and hover over filenames to preview")
-    for f in sorted(exclude, key=lambda x: natural_sort_key(x.name)):
-        if hasattr(log, 'write_with_preview'):
-            log.write_with_preview(f"      {f.name}", f)
-        else:
-            print(f"    {f.name}")
-    end_section()
+    with _Section(config, f"  Excluding ({len(exclude)}) — expand and hover over filenames to preview") as s:
+        for f in sorted(exclude, key=lambda x: natural_sort_key(x.name)):
+            s.add(f"    {_rel(f, src)}", preview_path=f)
     print(f"  {len(exclude)} image(s) will be excluded.")
 
     keep_list = [f for f in all_files if f not in exclude]
@@ -1176,7 +1329,7 @@ def find_duplicates(config, cancel=None):
         except OSError as e:
             if _is_no_space(e):
                 print(f"  ✖ Disk full after {copied} image(s). Stopping.")
-                _print_summary(copied=copied, failed=failed or None,
+                _print_summary(config, copied=copied, failed=failed or None,
                                skipped=skipped or None, label="copied")
                 print("")
                 return
@@ -1184,7 +1337,7 @@ def find_duplicates(config, cancel=None):
         except Exception as e:
             failed.append((f, str(e)))
 
-    _print_summary(copied=copied, failed=failed or None,
+    _print_summary(config, copied=copied, failed=failed or None,
                    skipped=skipped or None, label="copied")
     do_auto_clear(config)
     print(f"  Done! → {out}")
@@ -1225,14 +1378,17 @@ def pdf_combiner(config, cancel=None):
     if not pdfs:
         print("  No PDFs found in Input!")
         if skipped:
-            _print_summary(skipped=skipped)
+            _print_summary(config, skipped=skipped)
         print("")
         return
 
-    print(f"  Found {len(pdfs)} PDF(s). Combining...")
+    print(f"  Found {len(pdfs)} PDF(s){_size_suffix(config, pdfs)}")
+    _log_scan(config, pdfs, src, noun="PDF")
+    print("  Combining...")
     writer = PdfWriter()
     total_pages = 0
     failed = []
+    page_rows = []
     for i, pdf_path in enumerate(pdfs):
         if cancel and cancel.is_set():
             print(f"  Cancelled. ({total_pages} pages combined so far)")
@@ -1244,9 +1400,12 @@ def pdf_combiner(config, cancel=None):
             for page in reader.pages:
                 writer.add_page(page)
             total_pages += len(reader.pages)
-            print(f"  [{pdf_path.name}]  {len(reader.pages)} page(s)  (running total: {total_pages})")
+            page_rows.append(f"    {_rel(pdf_path, src)}  —  {len(reader.pages)} page(s)  (running total: {total_pages})")
         except Exception as e:
             failed.append((pdf_path, str(e)))
+    with _Section(config, f"  Pages per PDF ({len(page_rows)})") as s:
+        for row in page_rows:
+            s.add(row)
 
     try:
         out_path = out / "combined.pdf"
@@ -1261,7 +1420,7 @@ def pdf_combiner(config, cancel=None):
             return
         raise
 
-    _print_summary(copied=len(pdfs) - len(failed), failed=failed or None,
+    _print_summary(config, copied=len(pdfs) - len(failed), failed=failed or None,
                    skipped=skipped or None, label="combined")
     do_auto_clear(config)
     print(f"  Done! → {out}")
@@ -1294,9 +1453,8 @@ def pdf_to_images(config, cancel=None):
         fmt = raw.lower() or "jpg"
     fmt = {"jpeg": "jpg"}.get(fmt, fmt)
     if fmt not in ("jpg", "png"):
-        print(f"  Invalid format '{fmt}'. Choose jpg or png.")
-        print("")
-        return
+        print(f"  ⚠ Invalid format '{fmt}'. Using the default (jpg).")
+        fmt = "jpg"
     print(f"  Format: {fmt}")
 
     dpi = config.get("default_dpi", "ask")
@@ -1306,13 +1464,12 @@ def pdf_to_images(config, cancel=None):
             return _cancel()
         dpi = raw or "72"
     try:
-        dpi = int(dpi)
+        dpi = int(str(dpi).strip())
         if not 10 <= dpi <= 1200:
             raise ValueError
     except (TypeError, ValueError):
-        print(f"  Invalid DPI '{dpi}'. Enter a whole number between 10 and 1200.")
-        print("")
-        return
+        print(f"  ⚠ Invalid DPI '{dpi}' (use a whole number from 10 to 1200). Using the default (72).")
+        dpi = 72
     print(f"  DPI: {dpi}")
 
     out = get_output(config, "pdf to images", run_name)
@@ -1339,21 +1496,26 @@ def pdf_to_images(config, cancel=None):
     if not pdfs:
         print("  No PDFs found in Input!")
         if skipped:
-            _print_summary(skipped=skipped)
+            _print_summary(config, skipped=skipped)
         print("")
         return
 
     total_page_count = 0
+    page_counts = {}
     for pdf_path in pdfs:
         try:
-            total_page_count += len(PdfReader(str(pdf_path)).pages)
+            page_counts[pdf_path] = len(PdfReader(str(pdf_path)).pages)
+            total_page_count += page_counts[pdf_path]
         except Exception:
             pass
 
-    print(f"  Found {len(pdfs)} PDF(s), {total_page_count} pages total.")
+    print(f"  Found {len(pdfs)} PDF(s), {total_page_count} pages total{_size_suffix(config, pdfs)}.")
+    _log_scan(config, pdfs, src, noun="PDF",
+              details={p: (f"{n} page(s)" if (n := page_counts.get(p)) is not None else "unreadable") for p in pdfs})
     print(f"  Note: cancelling will stop after the current page finishes.")
     total_pages = 0
     failed = []
+    exported = []
     for pdf_path in pdfs:
         if cancel and cancel.is_set():
             print(f"  Cancelled. ({total_pages} pages exported so far)")
@@ -1380,7 +1542,7 @@ def pdf_to_images(config, cancel=None):
             except OSError as e:
                 if _is_no_space(e):
                     print(f"  ✖ Disk full after {total_pages + i} page(s). Stopping.")
-                    _print_summary(copied=total_pages + i, failed=failed or None,
+                    _print_summary(config, copied=total_pages + i, failed=failed or None,
                                    skipped=skipped or None, label="pages exported")
                     print("")
                     return
@@ -1388,9 +1550,13 @@ def pdf_to_images(config, cancel=None):
             except Exception as e:
                 failed.append((pdf_path, f"page {i+1}: {e}"))
         total_pages += page_count
-        print(f"  [{pdf_path.name}]  {page_count} page(s)  →  {pdf_out.name}/")
+        exported.append(f"    {_rel(pdf_path, src)}  →  {pdf_out.name}/  ({page_count} page(s))")
 
-    _print_summary(copied=total_pages, failed=failed or None,
+    with _Section(config, f"  Exported ({len(exported)})") as s:
+        for row in exported:
+            s.add(row)
+
+    _print_summary(config, copied=total_pages, failed=failed or None,
                    skipped=skipped or None, label="pages exported")
     do_auto_clear(config)
     print(f"  Total: {len(pdfs)} PDF(s), {total_pages} page(s) exported.")
@@ -1483,6 +1649,7 @@ def pdf_splitter(config, cancel=None):
     print(f"  Writing {part_count} part(s)...")
     failed = []
     written = 0
+    part_rows = []
     for i, (a, b, descending) in enumerate(ranges):
         if cancel and cancel.is_set():
             print(f"  Cancelled. ({written} part(s) saved so far)")
@@ -1497,19 +1664,22 @@ def pdf_splitter(config, cancel=None):
             with open(out_path, "wb") as f:
                 writer.write(f)
             direction = f" (reversed)" if descending else ""
-            print(f"  Part {i + 1}/{part_count}: pages {a}–{b}{direction}  →  {out_path.name}")
+            part_rows.append(f"    Part {i + 1}/{part_count}: pages {a}–{b}{direction}  →  {out_path.name}")
             written += 1
         except OSError as e:
             if _is_no_space(e):
                 print(f"  ✖ Disk full after {written} part(s). Stopping.")
-                _print_summary(copied=written, failed=failed or None, label="parts saved")
+                _print_summary(config, copied=written, failed=failed or None, label="parts saved")
                 print("")
                 return
             failed.append((pdf_path, f"part {i + 1}: {e}"))
         except Exception as e:
             failed.append((pdf_path, f"part {i + 1}: {e}"))
 
-    _print_summary(copied=written, failed=failed or None, label="parts saved")
+    with _Section(config, f"  Parts ({len(part_rows)})") as s:
+        for row in part_rows:
+            s.add(row)
+    _print_summary(config, copied=written, failed=failed or None, label="parts saved")
     do_auto_clear(config)
     print(f"  Done! {written} part(s) saved.")
     print(f"  → {out}")
