@@ -13,6 +13,7 @@ import psutil
 import errno
 import zipfile
 import tempfile
+import threading
 from pypdf import PdfReader, PdfWriter
 import sys as _sys
 
@@ -70,7 +71,7 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "preview_limit":              10,     # max lines a Log expansion shows (0 = show everything)
     "show_folder_stats":          True,   # show image count + size next to each folder in the Log
     "zip_extract_input":          True,   # unpack .zip / .cbz files found in Input before a tool runs
-    "zip_compression":            "zip",  # "zip" = saved as a zip | "cbz" = saved as a .cbz (images only, else zip) | "folder" = loose files
+    "zip_compression":            "zip",  # "zip"/"cbz" = one archive per result folder (cbz: images only, else zip) | "folder" = loose files
 }
 
 #FUNCTIONS——————————————————————————————————————————————————————————————————————————————————————————————————
@@ -123,11 +124,30 @@ def get_input(config):
     return Path(config["input"]) / "Input"
 
 
+STAGING_PREFIX = ".tankobon_run_"
+_RUNS = {}                      # staging folder -> {"root", "operation", "thread", "done"}
+_RUNS_LOCK = threading.Lock()
+
+
 def get_output(config, operation, run_name):
+    """Where a tool writes its results.
+    - Sort Output by Operation and/or a run name: a folder of its own (output/[operation/][run name]).
+    - Neither: results go straight into the main output folder (output/). The tool writes into a hidden staging
+      folder inside it first, and _finalize_output() moves the results out (packing them if wanted). That keeps
+      this run's results apart from earlier ones, so they can be packed (and replaced) safely."""
+    root = Path(config["output"]) / "output"
+    if not (config.get("sort_output", False) or run_name):
+        root.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=root))
+        with _RUNS_LOCK:
+            _RUNS[str(staging)] = {"root": root, "operation": operation,
+                                   "thread": threading.get_ident(), "done": False}
+        return staging
+    run_name = run_name or "Output"
     if config.get("sort_output", False):
-        base = Path(config["output"]) / "output" / operation / run_name
+        base = root / operation / run_name
     else:
-        base = Path(config["output"]) / "output" / run_name
+        base = root / run_name
     if config.get("replace_output", True) and base.exists():
         shutil.rmtree(base)
         folder = base
@@ -276,12 +296,13 @@ def save_pdf(image_paths, output_path):
 
 
 def _get_run_name(config, prompt="Run name (Enter to skip): "):
+    """Returns the run name, "" when the person didn't name the run, or None if they cancelled."""
     if not config.get("ask_run_name", False):
-        return "Output"
+        return ""
     val = input(prompt).strip()
     if val == SENTINEL:
         return None
-    return val or "Output"
+    return val
 
 
 def _cancel():
@@ -493,11 +514,11 @@ def _get_working_folders(src, use_sort=True):
 # INPUT : every tool unpacks .zip / .cbz files found anywhere in Input (even nested ones) into a
 #         normal folder before it starts, so every tool treats them exactly like folders.
 #         The zip is removed once it has been unpacked (Input only ever holds copies).
-# OUTPUT: with Preferences > Tools > Zip Output turned on, every tool also packs its result
-#         into "<run name>.zip" inside its output folder (the loose files are removed once the zip is checked).
-#         With zip_compression = "cbz" the archive is "<run name>.cbz" instead. A .cbz is a plain zip, but
-#         comic readers expect only images inside, so if the result contains anything else (PDFs, ...) the
-#         tool falls back to a normal .zip and says so.
+# OUTPUT: with Preferences > Tools > Output Archive set to zip or cbz, every top-level FOLDER of a result is packed
+#         into its own "<folder>.zip" / "<folder>.cbz" (chapter by chapter). Loose images at the top level are
+#         packed together into one archive; other files (PDFs, ...) stay as they are. The main output folder
+#         itself is never archived. A .cbz is a plain zip, but comic readers expect only images inside, so a
+#         folder that holds anything else is saved as a normal .zip instead, with a warning.
 
 ARCHIVE_EXTENSIONS    = {'.zip', '.cbz'}                       # .cbz (comic book archive) is just a zip
 ZIP_COMPRESSION_MODES = ("folder", "zip", "cbz")
@@ -663,34 +684,57 @@ def extract_archives(config, src, cancel=None):
     return True
 
 
-def zip_output(config, out, cancel=None):
-    """Packs everything in `out` into out/<out name>.zip (or .cbz) when Preferences > Tools > Zip Compression
-    is "zip" (or "cbz"). The loose files are removed afterwards, but only once the archive has been checked."""
+def _archive_mode(config):
+    """'zip', 'cbz', or None when results should stay as loose files and folders."""
     mode = config.get("zip_compression", "zip")
-    if mode not in ("zip", "cbz"):
-        return
-    files = [f for f in out.rglob("*") if f.is_file()]
-    if not files:
-        return
-    files.sort(key=lambda x: natural_sort_key(_rel(x, out)))
+    return mode if mode in ("zip", "cbz") else None
+
+
+def _remove_path(path):
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _free_name(dest_dir, name, replace, is_dir=False):
+    """Where a result called `name` goes inside dest_dir.
+    With Replace Output an existing item of that name is removed (so the new one replaces it);
+    otherwise the first free 'name (2)', 'name (3)', ... is used."""
+    target = dest_dir / name
+    if not (target.exists() or target.is_symlink()):
+        return target
+    if replace:
+        _remove_path(target)
+        return target
+    stem, suffix = (name, "") if is_dir else (Path(name).stem, Path(name).suffix)
+    n = 2
+    while (dest_dir / f"{stem} ({n}){suffix}").exists():
+        n += 1
+    return dest_dir / f"{stem} ({n}){suffix}"
+
+
+def _write_archive(config, files, base, dest_dir, stem, mode, cancel, replace, notes):
+    """Packs `files` (paths inside `base`) into dest_dir/<stem>.cbz (or .zip). Entries are stored relative to
+    `base`, so the images sit at the top of the archive. The archive is built under a temporary name, checked,
+    and only then given its final name, so a crash can never leave a broken archive behind.
+    Returns ("ok", final_path, size) | ("cancelled",) | ("failed", reason). Never deletes the source files."""
+    files = sorted(files, key=lambda x: natural_sort_key(_rel(x, base)))
     ext = ".zip"
     if mode == "cbz":
-        others = sorted({f.suffix.lower() or "(no extension)" for f in files if f.suffix.lower() not in CBZ_IMAGE_EXTENSIONS})
+        others = sorted({f.suffix.lower() or "(no extension)" for f in files
+                         if f.suffix.lower() not in CBZ_IMAGE_EXTENSIONS})
         if others:
-            print(f"  ⚠ CBZ needs images only, but the output also contains: {', '.join(others)}. Saving a .zip instead.")
+            notes.append(f"  ⚠ {stem}: contains {', '.join(others)}, which a CBZ can't hold. Saved as .zip instead.")
         else:
             ext = ".cbz"
-    zip_path = out / f"{out.name}{ext}"
-    partial = out / f"{out.name}{ext}.partial"
-    total = _total_size(files)
     try:
-        if total > shutil.disk_usage(out).free:
-            print("  ⚠ Not enough free space to make the zip. The output folder was kept as it is.")
-            return
+        if _total_size(files) > shutil.disk_usage(dest_dir).free:
+            return ("failed", "not enough free disk space")
     except OSError:
         pass
 
-    print(f"  Packing {len(files)} file(s) into {zip_path.name}...")
+    partial = dest_dir / f".tankobon_{threading.get_ident()}.partial"
     cancelled = False
     try:
         with zipfile.ZipFile(partial, "w", allowZip64=True, strict_timestamps=False) as zf:
@@ -700,48 +744,167 @@ def zip_output(config, out, cancel=None):
                     break
                 throttle_if_needed(config, cancel)
                 method = zipfile.ZIP_STORED if f.suffix.lower() in _ALREADY_COMPRESSED else zipfile.ZIP_DEFLATED
-                zf.write(f, _rel(f, out).replace(os.sep, "/"), compress_type=method)
+                zf.write(f, _rel(f, base).replace(os.sep, "/"), compress_type=method)
         if cancelled:
             partial.unlink(missing_ok=True)
-            print("  Packing cancelled. The output folder was kept as it is.")
-            return
-        with zipfile.ZipFile(partial) as zf:                     # never delete originals before the zip is proven good
+            return ("cancelled",)
+        with zipfile.ZipFile(partial) as zf:
             bad = zf.testzip()
         if bad:
             raise RuntimeError(f"zip check failed on '{bad}'")
-        os.replace(partial, zip_path)
+        final = _free_name(dest_dir, f"{stem}{ext}", replace)
+        os.replace(partial, final)
+        return ("ok", final, final.stat().st_size)
     except Exception as e:
         try:
             partial.unlink(missing_ok=True)
         except OSError:
             pass
-        if _is_no_space(e):
-            print("  ✖ Disk full — could not make the zip. The output folder was kept as it is.")
+        return ("failed", "disk full" if _is_no_space(e) else str(e))
+
+
+def _place_results(config, src, dest, loose_name, cancel=None):
+    """Moves the results found in `src` into `dest` and, if Preferences > Tools > Output Archive says so, packs them:
+      - every top-level FOLDER of the result becomes its own archive (chapter by chapter / volume by volume),
+      - loose IMAGES at the top level are packed together into one archive called `loose_name`,
+      - anything else (PDFs, ...) is left as a normal file.
+    The main output folder itself is never archived. If src is dest (a run folder made by Sort Output / Run Name)
+    everything is done in place. Items that fail to pack are kept as they are, never lost."""
+    mode = _archive_mode(config)
+    replace = config.get("replace_output", True)
+    inplace = src.resolve() == dest.resolve()
+    rows, notes, failed = [], [], []
+    loose_images, packed, cancelled = [], 0, False
+
+    def handle(res, label, source_files_dir=None, source_files=()):
+        nonlocal packed, cancelled
+        if res[0] == "ok":
+            packed += 1
+            rows.append(f"    {label}  →  {res[1].name}  ({_fmt_size(res[2])})")
+            if source_files_dir is not None:
+                shutil.rmtree(source_files_dir, ignore_errors=True)
+                if source_files_dir.exists():
+                    notes.append(f"  ⚠ {label}: archive saved, but the original folder could not be removed.")
+            for f in source_files:
+                try:
+                    f.unlink()
+                except OSError:
+                    notes.append(f"  ⚠ {f.name}: archive saved, but the original file could not be removed.")
+        elif res[0] == "cancelled":
+            cancelled = True
         else:
-            print(f"  ✖ Could not make the zip: {e}. The output folder was kept as it is.")
+            failed.append((Path(label), res[1]))
+
+    entries = sorted(src.iterdir(), key=lambda x: natural_sort_key(x.name))
+    todo = sum(1 for e in entries if e.is_dir() and not e.is_symlink()) \
+        + (1 if any(e.is_file() and e.suffix.lower() in CBZ_IMAGE_EXTENSIONS for e in entries) else 0)
+    if mode and todo:
+        print(f"  Packing {todo} item(s) as {mode}...")
+
+    for e in entries:
+        if cancel is not None and cancel.is_set():
+            cancelled = True
+            break
+        try:
+            if e.is_dir() and not e.is_symlink():
+                if mode:
+                    files = [f for f in e.rglob("*") if f.is_file()]
+                    if not files:
+                        shutil.rmtree(e, ignore_errors=True)         # an empty folder has nothing to pack
+                        continue
+                    handle(_write_archive(config, files, e, dest, e.name, mode, cancel, replace, notes),
+                           e.name, source_files_dir=e)
+                elif not inplace:
+                    shutil.move(str(e), str(_free_name(dest, e.name, replace, is_dir=True)))
+            elif e.is_file():
+                if mode and e.suffix.lower() in CBZ_IMAGE_EXTENSIONS:
+                    loose_images.append(e)
+                elif not inplace:
+                    shutil.move(str(e), str(_free_name(dest, e.name, replace)))
+        except Exception as exc:
+            failed.append((e, str(exc)))
+        if cancelled:
+            break
+
+    if loose_images and mode and not cancelled:
+        handle(_write_archive(config, loose_images, src, dest, loose_name, mode, cancel, replace, notes),
+               loose_name, source_files=loose_images)
+
+    if rows:
+        with _Section(config, f"  Archives ({len(rows)})") as s:
+            for row in rows:
+                s.add(row)
+    for note in notes:
+        print(note)
+    if cancelled:
+        print("  Packing cancelled. The remaining results were saved as they are.")
+    if failed:
+        _print_summary(config, copied=packed, failed=failed, label="archived")
+    elif packed:
+        print(f"  Saved: {packed} archive(s) → {_shown(dest)}")
+
+    if not inplace:
+        _sweep(src, dest, replace)
+
+
+def _sweep(src, dest, replace):
+    """Moves whatever is still in the staging folder `src` into `dest` as it is, then removes `src`."""
+    if not src.exists():
         return
-
-    print(f"  Saved: {zip_path.name}  ({len(files)} file(s), {_fmt_size(zip_path.stat().st_size)})")
-
-    left = 0
-    for f in files:
+    for e in list(src.iterdir()):
         try:
-            f.unlink()
-        except OSError:
-            left += 1
-    for d in sorted((p for p in out.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
-        try:
-            d.rmdir()
-        except OSError:
-            pass
-    if left:
-        print(f"  ⚠ {left} loose file(s) could not be removed after zipping.")
+            shutil.move(str(e), str(_free_name(dest, e.name, replace, e.is_dir() and not e.is_symlink())))
+        except Exception as exc:
+            print(f"  ⚠ Could not move {e.name} into the output folder: {exc}")
+    try:
+        src.rmdir()
+    except OSError:
+        pass
+    if src.exists():
+        print(f"  ⚠ Some results are still in {src}")
+
+
+def settle_runs(config):
+    """Call when a job ends, however it ended (finished, cancelled, crashed). A tool that stopped early never reached
+    _finalize_output(), so its results are still in the hidden staging folder: move them, as they are, into the
+    main output folder so nothing is hidden or lost."""
+    me = threading.get_ident()
+    with _RUNS_LOCK:
+        open_runs = [(p, r) for p, r in _RUNS.items() if r["thread"] == me and not r["done"]]
+    for p, rec in open_runs:
+        _sweep(Path(p), rec["root"], config.get("replace_output", True))
+        rec["done"] = True
+
+
+def recover_stale_runs(config):
+    """At start-up: results left in a hidden staging folder by a crash or a force-quit are moved into the output folder."""
+    out = config.get("output")
+    root = Path(out) / "output" if out else None
+    if root is None or not root.is_dir():
+        return
+    for e in root.iterdir():
+        if e.is_dir() and e.name.startswith(STAGING_PREFIX):
+            _sweep(e, root, config.get("replace_output", True))
 
 
 def _finalize_output(config, out, cancel=None):
-    """The last step of every successful tool: zip the result (if wanted), then clear Input (if wanted)."""
-    zip_output(config, out, cancel)
+    """The last step of every successful tool: put the results in the output folder (packing them if wanted),
+    then clear Input (if wanted)."""
+    with _RUNS_LOCK:
+        rec = _RUNS.get(str(out))
+    if rec is not None:                      # results are in a staging folder inside the main output folder
+        _place_results(config, out, rec["root"], rec["operation"], cancel)
+        rec["done"] = True
+    else:                                    # a run folder of its own (Sort Output / Run Name): pack in place
+        _place_results(config, out, out, out.name, cancel)
     do_auto_clear(config)
+
+
+def _shown(out):
+    """The folder to show the person. Results written to a hidden staging folder end up in the main output folder."""
+    with _RUNS_LOCK:
+        rec = _RUNS.get(str(out))
+    return rec["root"] if rec is not None else out
 
 
 def folders_to_pdf(config, cancel=None):
@@ -756,7 +919,7 @@ def folders_to_pdf(config, cancel=None):
     if run_name is None:
         return _cancel()
     out = get_output(config, "folders to pdf", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
@@ -812,7 +975,7 @@ def folders_to_pdf(config, cancel=None):
                 raise
             _print_summary(config, copied=len(all_paths), skipped=all_skipped or None, label="converted")
             _finalize_output(config, out, cancel)
-            print(f"  Done! → {out}")
+            print(f"  Done! → {_shown(out)}")
             print("")
         else:
             print("  No images found in any folder.")
@@ -859,7 +1022,7 @@ def folders_to_pdf(config, cancel=None):
                     print(f"  Failed to save {safe_name}.pdf: {e}")
         _print_summary(config, copied=total_converted, skipped=total_skipped or None, label="PDFs saved")
         _finalize_output(config, out, cancel)
-        print(f"  Done! → {out}")
+        print(f"  Done! → {_shown(out)}")
         print("")
 
 
@@ -875,7 +1038,7 @@ def images_to_pdf(config, cancel=None):
     if run_name is None:
         return _cancel()
     out = get_output(config, "images to pdf", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
     print(f"  Note: cannot be cancelled once PDF conversion starts.")
@@ -979,7 +1142,7 @@ def images_to_pdf(config, cancel=None):
 
     _print_summary(config, copied=len(final_files), skipped=skipped or None, label="converted")
     _finalize_output(config, out, cancel)
-    print(f"  Done! → {out}")
+    print(f"  Done! → {_shown(out)}")
     print("")
 
 
@@ -995,7 +1158,7 @@ def folder_renamer(config, cancel=None):
     if run_name is None:
         return _cancel()
     out = get_output(config, "folder renamer", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
@@ -1108,7 +1271,7 @@ def folder_renamer(config, cancel=None):
     _print_summary(config, copied=copied, failed=failed or None,
                    skipped=skipped or None, label="renamed")
     _finalize_output(config, out, cancel)
-    print(f"  Done! → {out}")
+    print(f"  Done! → {_shown(out)}")
     print("")
 
 
@@ -1124,7 +1287,7 @@ def file_renamer(config, cancel=None):
     if run_name is None:
         return _cancel()
     out = get_output(config, "renamed", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
@@ -1233,7 +1396,7 @@ def file_renamer(config, cancel=None):
 
     _print_summary(config, copied=copied, failed=failed or None, label="renamed")
     _finalize_output(config, out, cancel)
-    print(f"  Done! → {out}")
+    print(f"  Done! → {_shown(out)}")
     print("")
 
 
@@ -1249,7 +1412,7 @@ def combine_image_sets(config, cancel=None):
     if run_name is None:
         return _cancel()
     out = get_output(config, "combined image set", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
@@ -1328,7 +1491,7 @@ def combine_image_sets(config, cancel=None):
                    skipped=total_skipped or None, label="combined")
     _finalize_output(config, out, cancel)
     print(f"  Total: {counter - 1} images combined.")
-    print(f"  Done! → {out}")
+    print(f"  Done! → {_shown(out)}")
     print("")
 
 
@@ -1360,7 +1523,7 @@ def image_converter(config, cancel=None):
     ext        = ".jpg" if fmt == "jpg" else f".{fmt}"
 
     out = get_output(config, "converted", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
@@ -1444,7 +1607,7 @@ def image_converter(config, cancel=None):
     _print_summary(config, copied=converted + copied, failed=failed or None,
                    skipped=skipped or None, label="converted")
     _finalize_output(config, out, cancel)
-    print(f"  Done! → {out}")
+    print(f"  Done! → {_shown(out)}")
     print("")
 
 
@@ -1460,7 +1623,7 @@ def find_duplicates(config, cancel=None):
     if run_name is None:
         return _cancel()
     out = get_output(config, "find duplicates", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
@@ -1613,7 +1776,7 @@ def find_duplicates(config, cancel=None):
     _print_summary(config, copied=copied, failed=failed or None,
                    skipped=skipped or None, label="copied")
     _finalize_output(config, out, cancel)
-    print(f"  Done! → {out}")
+    print(f"  Done! → {_shown(out)}")
     print("")
 
 
@@ -1629,7 +1792,7 @@ def pdf_combiner(config, cancel=None):
     if run_name is None:
         return _cancel()
     out = get_output(config, "pdf combined", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
@@ -1698,7 +1861,7 @@ def pdf_combiner(config, cancel=None):
     _print_summary(config, copied=len(pdfs) - len(failed), failed=failed or None,
                    skipped=skipped or None, label="combined")
     _finalize_output(config, out, cancel)
-    print(f"  Done! → {out}")
+    print(f"  Done! → {_shown(out)}")
     print("")
 
 
@@ -1750,7 +1913,7 @@ def pdf_to_images(config, cancel=None):
     print(f"  DPI: {dpi}")
 
     out = get_output(config, "pdf to images", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
@@ -1837,7 +2000,7 @@ def pdf_to_images(config, cancel=None):
                    skipped=skipped or None, label="pages exported")
     _finalize_output(config, out, cancel)
     print(f"  Total: {len(pdfs)} PDF(s), {total_pages} page(s) exported.")
-    print(f"  Done! → {out}")
+    print(f"  Done! → {_shown(out)}")
     print("")
 
 
@@ -1853,7 +2016,7 @@ def pdf_splitter(config, cancel=None):
     if run_name is None:
         return _cancel()
     out = get_output(config, "pdf split", run_name)
-    print(f"  Output: {out}")
+    print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
 
@@ -1961,7 +2124,7 @@ def pdf_splitter(config, cancel=None):
     _print_summary(config, copied=written, failed=failed or None, label="parts saved")
     _finalize_output(config, out, cancel)
     print(f"  Done! {written} part(s) saved.")
-    print(f"  → {out}")
+    print(f"  → {_shown(out)}")
     print("")
 
 
@@ -2003,8 +2166,16 @@ def status(config):
     print("")
 
     if out_base.exists():
-        items = [i for i in out_base.iterdir() if i.is_dir()]
-        print(f"Output  —  {len(items)} folder(s)" if items else "Output  —  empty")
+        visible = [i for i in out_base.iterdir() if not i.name.startswith(".")]     # hide staging folders
+        items = [i for i in visible if i.is_dir()]
+        out_files = [i for i in visible if i.is_file()]
+        parts = []
+        if items:     parts.append(f"{len(items)} folder(s)")
+        if out_files: parts.append(f"{len(out_files)} file(s)")
+        print(f"Output  —  {', '.join(parts)}" if parts else "Output  —  empty")
+        for f in sorted(out_files, key=lambda x: natural_sort_key(x.name)):
+            tag = {".zip": "[zip]   ", ".cbz": "[cbz]   "}.get(f.suffix.lower(), "[file]  ")
+            print(f"  {tag} {f.name}")
         for op in sorted(items, key=lambda x: natural_sort_key(x.name)):
             sub_dirs = sorted([i for i in op.iterdir() if i.is_dir()], key=lambda x: natural_sort_key(x.name))
             file_count = sum(1 for f in op.rglob("*") if f.is_file())
@@ -2034,7 +2205,7 @@ def info():
 'status'  'exit'
 
 Zip files (.zip / .cbz) in Input are unpacked automatically.
-Results are saved as a zip by default; choose cbz or folder in Preferences > Tools > Zip Compression.
+Each result folder is saved as its own zip by default; choose cbz or folder in Preferences > Tools > Output Archive.
 
 All output goes to output/
 """)
@@ -2066,6 +2237,8 @@ def command_line():
                 print("Invalid command. Type 'info' for list.")
         except KeyboardInterrupt:
             print("\nInterrupted.")
+        finally:
+            settle_runs(config)
 
 
 if __name__ == "__main__":
