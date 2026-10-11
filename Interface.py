@@ -29,9 +29,9 @@ from Themes import THEMES
 
 
 TOOL_LABELS = {
-    "Folders to PDF", "Images to PDF", "Folder Renamer", "File Renamer",
+    "Folders to PDF", "Images to PDF", "Folders to EPUB", "Images to EPUB", "Folder Renamer", "File Renamer",
     "Combine Image Sets", "Image Converter", "Find Duplicates",
-    "PDF Combiner", "PDF Splitter", "PDF to Images",
+    "PDF Combiner", "EPUB Combiner", "PDF Splitter", "EPUB Splitter", "PDF to Images",
 }
 
 
@@ -42,6 +42,7 @@ class App:
         self.root.title("Tankobon")
         self.root.resizable(True, True)
         self.config = load_config()
+        self._refresh_format_tool_names()
         self._migrate_legacy_theme_colors()
         self.cancel_event = threading.Event()
         self._jobs_lock = threading.Lock()          # _running_jobs is touched by several threads
@@ -115,8 +116,8 @@ class App:
     }
 
     OPTION_LABELS = {
-        "combine":        "Combine all → one PDF",
-        "individual":     "One PDF per folder",
+        "combine":        "Combine all → one file",
+        "individual":     "One file per folder",
         "prefix":         "Prefix",
         "suffix":         "Suffix",
         "replace":        "Find & Replace",
@@ -149,16 +150,16 @@ class App:
     ]
 
     TOOLTIPS = {
-        "Folders to PDF":     "Turns the image folders in Input into PDFs: one combined PDF, or one PDF per folder.",
-        "Images to PDF":      "Converts all images in Input into a single PDF.",
+        "Folders to PDF":     "Turns the image folders in Input into PDFs: one combined PDF, or one PDF per folder.\nWrites EPUBs instead if Preferences > Tools > PDF Tools: Output Format is epub.",
+        "Images to PDF":      "Converts all images in Input into a single PDF (or EPUB, see Preferences > Tools > PDF Tools: Output Format).",
         "Folder Renamer":     "Renames folders: add a prefix or suffix, find & replace, or keep just the number (handy for sorting chapters). Renamed copies go to Output.",
         "File Renamer":       "Renames files by prefix, suffix, find/replace, or sequence numbering. Renamed copies go to Output.",
         "Combine Image Sets": "Merges multiple folders of images into one flat folder, preserving order.",
         "Image Converter":    "Converts all images in Input to a chosen format (jpg, png, webp, etc).",
         "Find Duplicates":    "Finds duplicate images (exact, or look-alike: set in Preferences > Tools) and copies the rest to Output. Nothing in Input is changed.",
-        "PDF Combiner":       "Combines multiple PDFs into one.",
-        "PDF Splitter":       "Splits a PDF into parts at page numbers you specify.",
-        "PDF to Images":      "Converts a PDF into individual image files. Resource intensive.",
+        "PDF Combiner":       "Combines multiple PDFs into one. EPUBs work too: only EPUBs give an EPUB, any PDF in the mix gives a PDF.",
+        "PDF Splitter":       "Splits a PDF or EPUB into parts at page numbers you specify.",
+        "PDF to Images":      "Converts a PDF into individual image files. Resource intensive.\nAlso takes the page images out of image-based EPUBs.",
         "Add Input":          "Copies files or a folder into the Input directory for processing.\nZip (.zip / .cbz) files can be added as they are: every tool unpacks them automatically.",
         "Clear Input":        "Deletes everything in the Input folder. Your original files are not affected (Input only holds copies).\nTo be asked first, turn on Preferences > General > Confirm before Clearing.",
         "Status":             "Shows what is currently in the Input and Output folders.",
@@ -325,6 +326,7 @@ class App:
                 self.log.tag_configure(tag, foreground=t["log_warn"])
             elif tag.startswith("log_success"):
                 self.log.tag_configure(tag, foreground=t["log_success"])
+        self._update_format_selector()
         self._update_button_states()
 
     def _apply_to_widget(self, widget, t):
@@ -768,6 +770,23 @@ class App:
             self._dark_btn.image = self._moon_image
         self._size_dark_btn()
 
+        format_row = tk.Frame(left)
+        format_row.pack(fill='x', pady=(2, 4))
+        format_theme = self._theme()
+        tk.Label(format_row, text="File production:", bg=format_theme["bg"],
+                 fg=format_theme["hint_fg"], font=self._uf(-1)).pack(side='left', padx=(1, 5))
+        self._format_buttons = {}
+        for fmt in ("pdf", "epub"):
+            button = tk.Label(format_row, text=fmt.upper(), bg=format_theme["bg"],
+                              fg=format_theme["fg"], font=self._uf(-1, bold=True),
+                              cursor="hand2", padx=5, pady=1)
+            button.pack(side='left', padx=1)
+            button.bind("<Button-1>", lambda e, f=fmt: self._set_doc_format(f))
+            button.bind("<Enter>", lambda e, b=button: b.configure(bg=self._theme()["hover"]))
+            button.bind("<Leave>", lambda e, b=button: self._update_format_selector())
+            self._format_buttons[fmt] = button
+        self._update_format_selector()
+
         status_row = tk.Frame(left)
         status_row.pack(fill='x', pady=(0, 4))
         self._status_row = status_row
@@ -834,6 +853,55 @@ class App:
 
     # ── button building ───────────────────────────────────────────────────────
 
+    def _refresh_format_tool_names(self):
+        """Use the selected production format in the two image-to-document tool names."""
+        fmt = self.config.get("default_doc_format", "pdf")
+        fmt = fmt if fmt in ("pdf", "epub") else "pdf"
+        self.config["default_doc_format"] = fmt
+        title = fmt.upper()
+        aliases = {"Folders to PDF": f"Folders to {title}",
+                   "Images to PDF": f"Images to {title}",
+                   "PDF Combiner": f"{title} Combiner",
+                   "PDF Splitter": f"{title} Splitter"}
+        cls = type(self)
+        self.TOGGLEABLE = [(key, section, aliases.get(label, label), method)
+                           for key, section, label, method in cls.TOGGLEABLE]
+        self.TOOL_OPTIONS = dict(cls.TOOL_OPTIONS)
+        self.TOOL_MODE_CONFIG_KEY = dict(cls.TOOL_MODE_CONFIG_KEY)
+        self.TOOL_FUNCS = dict(cls.TOOL_FUNCS)
+        self.TOOLTIPS = dict(cls.TOOLTIPS)
+        for old, new in aliases.items():
+            self.TOOL_OPTIONS[new] = cls.TOOL_OPTIONS[old]
+            if old in cls.TOOL_MODE_CONFIG_KEY:
+                self.TOOL_MODE_CONFIG_KEY[new] = cls.TOOL_MODE_CONFIG_KEY[old]
+            self.TOOL_FUNCS[new] = cls.TOOL_FUNCS[old]
+            if old == "Folders to PDF":
+                self.TOOLTIPS[new] = f"Turns image folders into {title} books. Combine creates one book from all folders; Individual creates one book per folder, with the images as its pages."
+            elif old == "Images to PDF":
+                self.TOOLTIPS[new] = f"Combines the images in Input into one {title} book, with the images as its pages."
+            elif old == "PDF Combiner":
+                self.TOOLTIPS[new] = f"Combines PDF and image-based EPUB inputs into one {title}. PDFs are rendered to page images when EPUB is selected."
+            else:
+                self.TOOLTIPS[new] = f"Splits the selected PDF or image-based EPUB into {title} parts at the page ranges you enter."
+
+    def _set_doc_format(self, fmt):
+        if fmt not in ("pdf", "epub") or fmt == self.config.get("default_doc_format", "pdf"):
+            return
+        self.config["default_doc_format"] = fmt
+        save_config(self.config)
+        self._refresh_format_tool_names()
+        self._rebuild_buttons()
+        self._update_format_selector()
+
+    def _update_format_selector(self):
+        if not hasattr(self, "_format_buttons"):
+            return
+        t = self._theme()
+        selected = self.config.get("default_doc_format", "pdf")
+        for fmt, button in self._format_buttons.items():
+            button.configure(bg=t["btn_bg"] if fmt == selected else t["bg"],
+                             fg=t["btn_fg"] if fmt == selected else t["fg"])
+
     def _rebuild_buttons(self):
         self._btn_labels.clear()
         self._suboption_labels.clear()
@@ -847,6 +915,7 @@ class App:
             self._build_classic_buttons()
 
         self._apply_theme()
+        self._update_format_selector()
         self._update_button_states()
         self.root.after_idle(self._ensure_size)
 
@@ -1031,7 +1100,12 @@ class App:
     # ── preferences / tabs ────────────────────────────────────────────────────
 
     def _show_preferences(self):
+        before = self.config.get("default_doc_format", "pdf")
         show_preferences(self)
+        if self.config.get("default_doc_format", "pdf") != before:
+            self._refresh_format_tool_names()
+            self._rebuild_buttons()
+            self._update_format_selector()
 
     # ── job running ───────────────────────────────────────────────────────────
 
@@ -1336,10 +1410,12 @@ class App:
     # ── tool runners ──────────────────────────────────────────────────────────
 
     def run_folders_to_pdf(self):
-        self._run(lambda: folders_to_pdf(self.config, self.cancel_event), job_name="Folders to PDF")
+        self._run(lambda: folders_to_pdf(self.config, self.cancel_event),
+                  job_name=f"Folders to {self.config.get('default_doc_format', 'pdf').upper()}")
 
     def run_images_to_pdf(self):
-        self._run(lambda: images_to_pdf(self.config, self.cancel_event), job_name="Images to PDF")
+        self._run(lambda: images_to_pdf(self.config, self.cancel_event),
+                  job_name=f"Images to {self.config.get('default_doc_format', 'pdf').upper()}")
 
     def run_folder_renamer(self):
         self._run(lambda: folder_renamer(self.config, self.cancel_event), job_name="Folder Renamer")
@@ -1357,10 +1433,12 @@ class App:
         self._run(lambda: find_duplicates(self.config, self.cancel_event), job_name="Find Duplicates")
 
     def run_pdf_splitter(self):
-        self._run(lambda: pdf_splitter(self.config, self.cancel_event), job_name="PDF Splitter")
+        self._run(lambda: pdf_splitter(self.config, self.cancel_event),
+                  job_name=f"{self.config.get('default_doc_format', 'pdf').upper()} Splitter")
 
     def run_pdf_combiner(self):
-        self._run(lambda: pdf_combiner(self.config, self.cancel_event), job_name="PDF Combiner")
+        self._run(lambda: pdf_combiner(self.config, self.cancel_event),
+                  job_name=f"{self.config.get('default_doc_format', 'pdf').upper()} Combiner")
 
     def run_pdf_to_images(self):
         self._run(lambda: pdf_to_images(self.config, self.cancel_event), job_name="PDF to Images")
