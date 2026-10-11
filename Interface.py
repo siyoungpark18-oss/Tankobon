@@ -215,6 +215,23 @@ class App:
         self._left.configure(width=width)
         self._ensure_size()
 
+    def _size_dark_btn(self):
+        """Give the moon/sun button one fixed hit area: the larger of the two pictures. Without this the moon
+        (an image) and the sun (a text symbol) are different sizes, so the clickable area changed on every click."""
+        lbl = self._dark_btn
+        keep = (str(lbl.cget("image")), lbl.cget("text"))
+        w = h = 0
+        for image, text in ((self._moon_image or "", "" if self._moon_image else "🌙"), ("", "☀")):
+            lbl.configure(image=image, text=text)
+            lbl.update_idletasks()
+            w, h = max(w, lbl.winfo_reqwidth()), max(h, lbl.winfo_reqheight())
+        if keep[0] and self._moon_image and keep[0] == str(self._moon_image):
+            lbl.configure(image=self._moon_image, text=keep[1])
+            lbl.image = self._moon_image
+        else:
+            lbl.configure(image="", text=keep[1])
+        lbl._box.configure(width=w, height=h)
+
     def _change_ui_font(self, delta):
         new = self._clamp_ui_size(self._ui_size + delta)
         if new == self._ui_size:
@@ -231,6 +248,7 @@ class App:
         if not self._dark and self._moon_image:
             self._dark_btn.configure(image=self._moon_image, text="")
             self._dark_btn.image = self._moon_image
+        self._size_dark_btn()
         self._rebuild_buttons()
         self._fit_sidebar()
 
@@ -671,9 +689,15 @@ class App:
         self._title_lbl = tk.Label(title_row, text="Tankobon", font=self._uf(1, bold=True))
         self._title_lbl.pack(side='left')
 
-        def _mini_btn(parent, text_or_var, cmd, side='right', tooltip=None):
+        def _mini_btn(parent, text_or_var, cmd, side='right', tooltip=None, boxed=False):
             t = self._theme()
-            lbl = tk.Label(parent, bg=t["bg"], fg=t["fg"], font=self._uf(), width=0, cursor="hand2")
+            # boxed: the label sits in a fixed-size frame and fills it, so the clickable / highlighted
+            # area stays the same whatever is drawn inside (used by the moon/sun button, see _size_dark_btn).
+            box = None
+            if boxed:
+                box = tk.Frame(parent, bg=t["bg"])
+                box.pack_propagate(False)
+            lbl = tk.Label(box or parent, bg=t["bg"], fg=t["fg"], font=self._uf(), width=0, cursor="hand2")
             if isinstance(text_or_var, str):
                 lbl.configure(text=text_or_var)
             self._mini_lbls.append(lbl)
@@ -702,7 +726,12 @@ class App:
                 lbl.bind("<Enter>", lambda e: (lbl.configure(bg=self._theme()["hover"]), show_tip(e)))
                 lbl.bind("<Leave>", lambda e: (lbl.configure(bg=self._theme()["bg"]), hide_tip(e)))
 
-            lbl.pack(side=side, padx=(3, 1), pady=1)
+            if box is not None:
+                lbl.pack(fill='both', expand=True)
+                box.pack(side=side, padx=(3, 1), pady=1)
+                lbl._box = box
+            else:
+                lbl.pack(side=side, padx=(3, 1), pady=1)
             return lbl
 
         # Packed first = furthest right. Everything packed after keeps its place relative to these.
@@ -714,11 +743,12 @@ class App:
         _mini_btn(title_row, "i", self._show_docs,        tooltip="Documentation")
         _mini_btn(title_row, "≡", self._show_preferences, tooltip="Preferences")
         moon_icon = self._moon_image if (self._moon_image and not self._dark) else ("☀" if self._dark else "🌙")
-        self._dark_btn = _mini_btn(title_row, moon_icon, self._toggle_dark,
+        self._dark_btn = _mini_btn(title_row, moon_icon, self._toggle_dark, boxed=True,
                                    tooltip="Dark Mode" if not self._dark else "Bright Mode")
         if self._moon_image and not self._dark:
             self._dark_btn.configure(image=self._moon_image, text="")
             self._dark_btn.image = self._moon_image
+        self._size_dark_btn()
 
         status_row = tk.Frame(left)
         status_row.pack(fill='x', pady=(0, 4))
