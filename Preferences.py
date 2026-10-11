@@ -40,6 +40,8 @@ PREF_TIPS = {
     "throttle_cpu":               "Throttles the Operation if CPU usage exceeds the threshold.\n If your computer already exceeds this limit, it will throttle until it drops below it.\n 0 removes the limit, and can cause your computer to crash.",
     "throttle_mem":               "Throttles the Operation if RAM usage exceeds the threshold.\n If your computer already exceeds this limit, it will throttle until it drops below it.\n 0 removes the limit, and can cause your computer to crash.",
     "log_blank_lines":            "Double spaces most text in the log.\nDisable for a more compact log.",
+    "preview_limit":              "How many lines a Log expansion lists before it shows '… and N more'.\n Type any whole number. 0 shows everything.\n Anything that isn't a whole number is replaced with 10.",
+    "show_folder_stats":          "Shows the number of images and the total size next to each folder in the Log.\n Needs a quick look at each file's size, so turn this off if scanning very large Inputs feels slow.",
 }
 
 KEY_LABELS = {
@@ -58,6 +60,17 @@ KEY_LABELS = {
     "log_success": "Log Success",
     "log_dim":     "Log Dim Text",
 }
+
+
+def _safe_int(val, default, lo=None, hi=None):
+    """Whole number from text. Anything unusable (letters, blank, out of range) gives `default` instead of crashing."""
+    try:
+        n = int(str(val).strip().split()[0])
+    except (ValueError, IndexError):
+        return default
+    if (lo is not None and n < lo) or (hi is not None and n > hi):
+        return default
+    return n
 
 
 class FlatDropdown(tk.Frame):
@@ -108,7 +121,7 @@ def show_preferences(app):
     app._prefs_win = win
     win.title("Preferences")
     win.resizable(True, True)
-    win.geometry("640x520")
+    win.geometry("640x580")
     win.configure(bg=t["bg"])
 
     outer = tk.Frame(win, bg=t["bg"])
@@ -276,6 +289,8 @@ def show_preferences(app):
         ("guide_empty_input",     "Dim Tools when Input Empty",     "check", None),
         ("show_tooltips",         "Show Tooltips",                  "check", None),
         ("log_default_expanded",  "Expand Log Dialogue by Default", "check", None),
+        ("preview_limit",         "Log List Size (0 = all)",        "entry", "10"),
+        ("show_folder_stats",     "Show Folder Counts & Sizes",     "check", None),
         ("show_timestamps",       "Show Timestamps",                "check", None),
         ("open_output_recent",    "Open Most Recent Output",        "check", None),
         ("min_free_gb",           "Minimum Free Space",             "combo", ["0","1","2","3","5","10"]),
@@ -313,9 +328,16 @@ def show_preferences(app):
                 row=row, column=0, sticky='w', pady=4, padx=(0, 16))
             _info_btn(page, row, key, PREF_TIPS)
             if typ == "check":
-                default = True if key in ("guide_empty_input", "show_tooltips") else False
+                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats") else False
                 v = tk.BooleanVar(value=bool(app.config.get(key, default)))
                 _check_btn(page, v).grid(row=row, column=1, sticky='w')
+            elif typ == "entry":
+                v = tk.StringVar(value=str(app.config.get(key, opts)))
+                tk.Entry(page, textvariable=v, width=8, font=('', 8),
+                         bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["entry_fg"],
+                         relief='flat', highlightthickness=1,
+                         highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"]
+                         ).grid(row=row, column=1, sticky='w')
             else:
                 raw_val = str(app.config.get(key, opts[0]))
                 if raw_val not in opts:
@@ -463,14 +485,17 @@ def show_preferences(app):
             val = v.get()
             if key in ("auto_clear_input", "confirm_clear", "replace_output", "sort_output",
                        "guide_empty_input", "show_tooltips", "allow_concurrent_jobs",
-                       "log_default_expanded", "show_timestamps", "open_output_recent", "log_blank_lines"):
+                       "log_default_expanded", "show_timestamps", "open_output_recent", "log_blank_lines",
+                       "show_folder_stats"):
                 app.config[key] = bool(val)
             elif key in ("throttle_cpu", "throttle_mem"):
-                app.config[key] = int(str(val).split()[0])
+                app.config[key] = _safe_int(val, 80, 0, 100)
             elif key == "default_dpi":
-                app.config[key] = val if val == "ask" else int(val)
+                app.config[key] = val if val == "ask" else _safe_int(val, 72, 10, 1200)
             elif key == "min_free_gb":
-                app.config[key] = int(str(val).split()[0])
+                app.config[key] = _safe_int(val, 10, 0)
+            elif key == "preview_limit":
+                app.config[key] = _safe_int(val, 10, 0)
             elif key == "default_sort":
                 app.config[key] = val if val in ("natural", "none") else "natural"
             else:
