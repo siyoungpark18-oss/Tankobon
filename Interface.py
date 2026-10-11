@@ -948,39 +948,35 @@ class App:
         self._open_accordion[label] = {"open": False, "close": close_fn}
 
         if not options or has_default:
+            # Nothing to choose: the box itself runs the tool (same as Clear Input, Status, ...).
             hdr_lbl.configure(text=label)
-            rbl = tk.Label(hdr_row, text="▶", bg=t["bg"], fg=t["fg"],
-                           font=self._uf(), padx=5, cursor="hand2")
-            rbl.pack(side='right', padx=(5, 3), pady=1)
-            rbl.bind("<Button-1>", lambda e, fn=run_fn, jn=label:
-                     self._inject_and_run(fn, None, jn))
-            rbl.bind("<Enter>", lambda e, b=rbl: b.configure(bg=self._theme()["hover"]))
-            rbl.bind("<Leave>", lambda e, b=rbl: b.configure(bg=self._theme()["bg"]))
+            on_click = lambda e, fn=run_fn, jn=label: self._inject_and_run(fn, None, jn)
         else:
-            hdr_lbl.bind("<Button-1>", lambda e, fn=set_open: fn())
-            hdr_lbl.bind("<Enter>", lambda e: hdr_lbl.configure(bg=self._theme()["hover"]))
-            hdr_lbl.bind("<Leave>", lambda e: hdr_lbl.configure(bg=self._theme()["bg"]))
+            on_click = lambda e, fn=set_open: fn()          # opens/closes the option list
+        hdr_lbl.bind("<Button-1>", on_click)
+        hdr_lbl.bind("<Enter>", lambda e: hdr_lbl.configure(bg=self._theme()["hover"]))
+        hdr_lbl.bind("<Leave>", lambda e: hdr_lbl.configure(bg=self._theme()["bg"]))
 
         if options and not has_default:
+            # Each option is a box like the other buttons: its right edge lines up with the header's.
+            import tkinter.font as tkfont
+            indent = 18
+            char_w = max(1, tkfont.Font(root=self.root, font=self._uf()).measure("0"))
+            opt_chars = max(8, 22 - round(indent / char_w))
             for opt in options:
                 opt_label = self.OPTION_LABELS.get(opt, opt)
                 row = tk.Frame(body, bg=t["bg"])
-                row.pack(fill='x', pady=1, padx=(18, 0))
+                row.pack(fill='x', pady=1)
 
                 opt_lbl = tk.Label(row, text=opt_label, bg=t["bg"], fg=t["fg"],
-                                   font=self._uf(), anchor='w')
-                opt_lbl.pack(side='left', fill='x', expand=True)
+                                   font=self._uf(), width=opt_chars, anchor='w', padx=4,
+                                   cursor="hand2")
+                opt_lbl.pack(side='left', padx=(indent + 1, 1), pady=1)
                 self._suboption_labels.setdefault(label, []).append(opt_lbl)
 
-                rbl = tk.Label(row, text="▶", bg=t["bg"], fg=t["fg"],
-                               font=self._uf(), padx=5, cursor="hand2")
-                rbl.pack(side='right', padx=(5, 3), pady=1)
-
-                rbl.bind("<Button-1>",
-                         lambda e, fn=run_fn, o=opt, jn=label:
-                         self._inject_and_run(fn, o, jn))
-                rbl.bind("<Enter>", lambda e, b=rbl: b.configure(bg=self._theme()["hover"]))
-                rbl.bind("<Leave>", lambda e, b=rbl: b.configure(bg=self._theme()["bg"]))
+                opt_lbl.bind("<Button-1>",
+                             lambda e, fn=run_fn, o=opt, jn=label:
+                             self._inject_and_run(fn, o, jn))
                 opt_lbl.bind("<Enter>", lambda e, b=opt_lbl: b.configure(bg=self._theme()["hover"]))
                 opt_lbl.bind("<Leave>", lambda e, b=opt_lbl: b.configure(bg=self._theme()["bg"]))
 
