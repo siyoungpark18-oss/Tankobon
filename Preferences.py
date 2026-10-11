@@ -42,7 +42,7 @@ PREF_TIPS = {
     "log_blank_lines":            "Double spaces most text in the log.\nDisable for a more compact log.",
     "preview_limit":              "How many lines a Log expansion lists before it shows '… and N more'.\n Type any whole number. 0 shows everything.\n Anything that isn't a whole number is replaced with 10.",
     "zip_extract_input":          "Zip (.zip) and comic archive (.cbz) files in Input are unpacked into folders before any tool runs, so they work like normal folders.\n The zip is removed after it is unpacked (Input only holds copies). Zips inside zips are unpacked too.\n Zips that are broken or password-protected are left alone and reported.",
-    "zip_output":                 "Also packs each result into a zip file named after the run, inside its output folder.\n 'zip + folder' keeps the loose files next to the zip.\n 'zip only' keeps just the zip, and only removes the loose files after the zip has been checked.",
+    "zip_compression":            "Zip saves each result as a single zip file named after the run, inside its output folder.\n CBZ does the same but names it .cbz for comic readers. A CBZ may only hold images, so results with anything else (PDFs, etc.) are saved as a normal zip instead, with a warning.\n Folder leaves the results as ordinary loose files and folders.\n The archive is checked before the loose files are removed.",
     "show_folder_stats":          "Shows the number of images and the total size next to each folder in the Log.\n Needs a quick look at each file's size, so turn this off if scanning very large Inputs feels slow.",
 }
 
@@ -310,7 +310,7 @@ def show_preferences(app):
         ("default_dedupe_hash",         "Find Duplicates: Hash Method",  "combo", ["exact", "perceptual"]),
         ("default_dpi",                 "Default DPI (PDF to Images)",   "combo", ["ask","72","96","150","200","300","600"]),
         ("zip_extract_input",           "Unpack Zip Files in Input",     "check", None),
-        ("zip_output",                  "Zip Output (all tools)",        "combo", ["off", "zip + folder", "zip only"]),
+        ("zip_compression",             "Output Archive",                "combo", ["zip", "cbz", "folder"]),
     ]
 
     hotkey_fields = [
