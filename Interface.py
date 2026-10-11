@@ -23,6 +23,7 @@ from Manager import (
 from Log import LogRedirect, input_queue, thread_safe_input, patch_input, EXPAND, COLLAPSE
 from Preferences import show_preferences
 from Themes import THEMES
+
 #INPUT QUEUE——————————————————————————————————————————————————————————————————————————————————————————————
 
 
@@ -59,10 +60,14 @@ class App:
         self._suboption_labels = {}
         self._last_input_count = -1
         self._last_count_check = 0.0
+        self._ui_size = self._clamp_ui_size(self.config.get("ui_font_size", self.UI_BASE))
+        self._mini_lbls = []                        # title-row buttons (resized together)
         self._moon_image = self._load_moon_icon()
         patch_input()
         self._build_ui()
         self._apply_theme()
+        self._fit_sidebar()
+        self._map_bind = self.root.bind("<Map>", self._on_first_map, add="+")
         # ONE shared log writer for stdout and stderr, so their lines stay in order.
         self._log_redirect = LogRedirect(self.log, self)
         sys.stdout = self._log_redirect
@@ -159,6 +164,76 @@ class App:
         "Open Output":        "Opens the output folder in Finder/Explorer and prints the path to the log.",
     }
 
+    # ── sidebar text size ─────────────────────────────────────────────────────
+
+    UI_BASE, UI_MIN, UI_MAX = 7, 6, 16      # UI_BASE is the size the app always used
+    SIDEBAR_BASE_W = 200                    # sidebar width (px) at UI_BASE, before the -/+ buttons
+    MIN_LOG_W = 400                         # the window grows rather than squeeze the log below this
+
+    def _clamp_ui_size(self, v):
+        try:
+            return max(self.UI_MIN, min(self.UI_MAX, int(v)))
+        except (TypeError, ValueError):
+            return self.UI_BASE
+
+    def _uf(self, delta=0, bold=False):
+        """Font for sidebar text. delta is relative to the current sidebar size."""
+        size = max(5, self._ui_size + delta)
+        return ('', size, 'bold') if bold else ('', size)
+
+    def _ensure_size(self):
+        """Grow the window (never shrink it) so nothing in the sidebar is cut off and the log keeps room."""
+        if not self.root.winfo_ismapped():
+            return          # window size is not known yet; _on_first_map() calls this again
+        try:
+            self.root.update_idletasks()
+            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            cur_w, cur_h = self.root.winfo_width(), self.root.winfo_height()
+            need_h = (sum(c.winfo_reqheight() for c in self._left.winfo_children()) + 2 + 4 + 20)
+            need_w = int(self._left.cget("width")) + 30 + self.MIN_LOG_W
+            new_w = min(max(cur_w, need_w), sw)
+            new_h = min(max(cur_h, need_h), sh - 80)        # 80 ≈ taskbar / title bar
+            if (new_w, new_h) != (cur_w, cur_h):
+                self.root.geometry(f"{new_w}x{new_h}")
+        except tk.TclError:
+            pass
+
+    def _on_first_map(self, event):
+        if event.widget is self.root:
+            self.root.unbind("<Map>", self._map_bind)
+            self._ensure_size()
+
+    def _fit_sidebar(self):
+        """Set the sidebar width for the current text size. The -/+ buttons sit at the far right of the title
+        row, so the sidebar is widened by exactly their width and every other button keeps its position."""
+        self.root.update_idletasks()
+        s = self._ui_size
+        extra = sum(b.winfo_reqwidth() + 4 for b in self._size_btns)        # +4 = their padding
+        width = max(round(self.SIDEBAR_BASE_W * s / self.UI_BASE),
+                    self._btn_frame.winfo_reqwidth() + round(22 * s / self.UI_BASE)) + extra
+        width = max(width, self._title_row.winfo_reqwidth() + 4)
+        self._left.configure(width=width)
+        self._ensure_size()
+
+    def _change_ui_font(self, delta):
+        new = self._clamp_ui_size(self._ui_size + delta)
+        if new == self._ui_size:
+            return
+        self._ui_size = new
+        self.config["ui_font_size"] = new
+        save_config(self.config)
+        self._hide_tooltip()
+        self._moon_image = self._load_moon_icon()
+        self._title_lbl.configure(font=self._uf(1, bold=True))
+        for lbl in self._mini_lbls:
+            lbl.configure(font=self._uf())
+        self._input_status_lbl.configure(font=('Courier', new))
+        if not self._dark and self._moon_image:
+            self._dark_btn.configure(image=self._moon_image, text="")
+            self._dark_btn.image = self._moon_image
+        self._rebuild_buttons()
+        self._fit_sidebar()
+
     # ── theme ─────────────────────────────────────────────────────────────────
 
     def _theme(self):
@@ -190,7 +265,8 @@ class App:
         try:
             from PIL import Image, ImageTk
             assets = Path(__file__).parent / "assets"
-            img = Image.open(assets / "moon.png").resize((14, 14), Image.LANCZOS)
+            px = max(8, round(14 * self._ui_size / self.UI_BASE))
+            img = Image.open(assets / "moon.png").resize((px, px), Image.LANCZOS)
             return ImageTk.PhotoImage(img)
         except Exception:
             return None
@@ -547,7 +623,7 @@ class App:
         self._hide_tooltip()
         t = THEMES["light"] if force_light else self._theme()
         tip = tk.Label(self.root, text=text, wraplength=wrap, justify='left',
-                       font=('Courier', 7), bg=t["bg"], fg=t["fg"], padx=6, pady=4)
+                       font=('Courier', self._ui_size), bg=t["bg"], fg=t["fg"], padx=6, pady=4)
         tip.update_idletasks()
         x = widget.winfo_rootx() - self.root.winfo_rootx()
         y = widget.winfo_rooty() - self.root.winfo_rooty()
@@ -563,7 +639,7 @@ class App:
 
     def _show_tooltip(self, widget, text):
         # add="+" keeps the hover highlight that was bound to the same events before.
-        widget.bind("<Enter>", lambda e: self._place_tooltip(widget, text, wrap=220), add="+")
+        widget.bind("<Enter>", lambda e: self._place_tooltip(widget, text, wrap=round(220 * self._ui_size / self.UI_BASE)), add="+")
         widget.bind("<Leave>", lambda e: self._hide_tooltip(), add="+")
 
     def _show_tooltip_popup(self, widget, text, force_light=False, below=False):
@@ -582,21 +658,23 @@ class App:
     def _build_ui(self):
         self._log_font_size = self.config.get("log_font_size", 8)
 
-        left = tk.Frame(self.root, width=200)
+        left = tk.Frame(self.root, width=self.SIDEBAR_BASE_W)
         left.pack(side='left', fill='y', padx=10, pady=10)
         left.pack_propagate(False)
+        self._left = left
 
         title_row = tk.Frame(left)
         title_row.pack(fill='x', pady=(0, 2))
-        tk.Label(title_row, text="Tankobon", font=('', 8, 'bold')).pack(side='left')
+        self._title_row = title_row
+        self._title_lbl = tk.Label(title_row, text="Tankobon", font=self._uf(1, bold=True))
+        self._title_lbl.pack(side='left')
 
         def _mini_btn(parent, text_or_var, cmd, side='right', tooltip=None):
             t = self._theme()
-            f = tk.Frame(parent, bg=t["fg"], padx=1, pady=1)
-            lbl = tk.Label(f, bg=t["bg"], fg=t["fg"], font=('', 7), width=0, cursor="hand2")
+            lbl = tk.Label(parent, bg=t["bg"], fg=t["fg"], font=self._uf(), width=0, cursor="hand2")
             if isinstance(text_or_var, str):
                 lbl.configure(text=text_or_var)
-            lbl.pack()
+            self._mini_lbls.append(lbl)
 
             _clicked = {"v": False}
 
@@ -622,9 +700,14 @@ class App:
                 lbl.bind("<Enter>", lambda e: (lbl.configure(bg=self._theme()["hover"]), show_tip(e)))
                 lbl.bind("<Leave>", lambda e: (lbl.configure(bg=self._theme()["bg"]), hide_tip(e)))
 
-            f.pack(side=side, padx=(2, 0))
+            lbl.pack(side=side, padx=(3, 1), pady=1)
             return lbl
 
+        # Packed first = furthest right. Everything packed after keeps its place relative to these.
+        self._size_btns = [
+            _mini_btn(title_row, "+", lambda: self._change_ui_font(+1), tooltip="Larger sidebar text"),
+            _mini_btn(title_row, "−", lambda: self._change_ui_font(-1), tooltip="Smaller sidebar text"),
+        ]
         _mini_btn(title_row, "?", self._show_help,        tooltip="Help")
         _mini_btn(title_row, "i", self._show_docs,        tooltip="Documentation")
         _mini_btn(title_row, "≡", self._show_preferences, tooltip="Preferences")
@@ -637,10 +720,11 @@ class App:
 
         status_row = tk.Frame(left)
         status_row.pack(fill='x', pady=(0, 4))
+        self._status_row = status_row
         t = self._theme()
         self._input_status_lbl = tk.Label(
             status_row, text="[0 items]",
-            font=('Courier', 7), fg=t["hint_fg"], bg=t["bg"], anchor='w'
+            font=('Courier', self._ui_size), fg=t["hint_fg"], bg=t["bg"], anchor='w'
         )
         self._input_status_lbl.pack(side='left')
 
@@ -714,6 +798,7 @@ class App:
 
         self._apply_theme()
         self._update_button_states()
+        self.root.after_idle(self._ensure_size)
 
     def _build_classic_buttons(self):
         from collections import OrderedDict
@@ -740,7 +825,7 @@ class App:
 
         for section_label, cmds in list(toggleable_sections.items()) + fixed_sections:
             tk.Label(self._btn_frame, text=section_label,
-                     font=('', 7, 'bold')).pack(anchor='w', pady=(8, 2))
+                     font=self._uf(bold=True)).pack(anchor='w', pady=(8, 2))
             for label, cmd in cmds:
                 self._make_button(self._btn_frame, label, cmd,
                                   tooltip=self.TOOLTIPS.get(label))
@@ -756,20 +841,20 @@ class App:
 
         for section_label, items in tool_rows.items():
             tk.Label(self._btn_frame, text=section_label,
-                     font=('', 7, 'bold'), bg=t["bg"], fg=t["fg"]
+                     font=self._uf(bold=True), bg=t["bg"], fg=t["fg"]
                      ).pack(anchor='w', pady=(8, 2))
             for label, run_fn in items:
                 self._make_tool_accordion(self._btn_frame, label, run_fn)
 
         tk.Label(self._btn_frame, text="Input",
-                 font=('', 7, 'bold'), bg=t["bg"], fg=t["fg"]
+                 font=self._uf(bold=True), bg=t["bg"], fg=t["fg"]
                  ).pack(anchor='w', pady=(8, 2))
         self._make_tool_accordion(self._btn_frame, "Add Input", self.pick_files)
         for label, cmd in [("Clear Input", self.clear_input), ("Open Input", self.open_input)]:
             self._make_button(self._btn_frame, label, cmd, tooltip=self.TOOLTIPS.get(label))
 
         tk.Label(self._btn_frame, text="Utility",
-                 font=('', 7, 'bold'), bg=t["bg"], fg=t["fg"]
+                 font=self._uf(bold=True), bg=t["bg"], fg=t["fg"]
                  ).pack(anchor='w', pady=(8, 2))
         for label, cmd in [
             ("Status",       self.run_status),
@@ -785,26 +870,24 @@ class App:
         row = tk.Frame(parent, bg=t["bg"])
         row.pack(pady=2, fill='x')
 
-        f = tk.Frame(row, bg=t["fg"], padx=1, pady=1)
-        lbl = tk.Label(f, text=text, bg=t["bg"], fg=t["fg"],
-                       font=('', 7), width=22, cursor="hand2")
-        lbl.pack()
+        lbl = tk.Label(row, text=text, bg=t["bg"], fg=t["fg"],
+                       font=self._uf(), width=22, cursor="hand2")
         lbl.bind("<Button-1>", lambda e: cmd())
         lbl.bind("<Enter>", lambda e: lbl.configure(bg=self._theme()["hover"]))
         lbl.bind("<Leave>", lambda e: lbl.configure(bg=self._theme()["bg"]))
-        f.pack(side='left')
+        lbl.pack(side='left', padx=1, pady=1)
 
         self._btn_labels[text] = lbl
 
         if tooltip and self.config.get("show_tooltips", True):
             info = tk.Label(row, text="i", bg=t["bg"], fg=t["hint_fg"],
-                            font=('', 6), cursor="hand2", padx=2)
+                            font=self._uf(-1), cursor="hand2", padx=2)
             info.pack(side='left', padx=(3, 0))
             info.bind("<Enter>", lambda e: info.configure(bg=self._theme()["hover"]))
             info.bind("<Leave>", lambda e: info.configure(bg=self._theme()["bg"]))
             self._show_tooltip(info, tooltip)
 
-        return f, lbl
+        return lbl
 
     def _make_tool_accordion(self, parent, label, run_fn):
         t = self._theme()
@@ -817,17 +900,15 @@ class App:
         hdr_row = tk.Frame(outer, bg=t["bg"])
         hdr_row.pack(fill='x')
 
-        hdr_f   = tk.Frame(hdr_row, bg=t["fg"], padx=1, pady=1)
-        hdr_lbl = tk.Label(hdr_f, text=label, bg=t["bg"], fg=t["fg"],
-                           font=('', 7), width=22, cursor="hand2")
-        hdr_lbl.pack()
-        hdr_f.pack(side='left')
+        hdr_lbl = tk.Label(hdr_row, text=label, bg=t["bg"], fg=t["fg"],
+                           font=self._uf(), width=22, cursor="hand2")
+        hdr_lbl.pack(side='left', padx=1, pady=1)
 
         self._btn_labels[label] = hdr_lbl
 
         if self.config.get("show_tooltips", True) and label in self.TOOLTIPS:
             info = tk.Label(hdr_row, text="i", bg=t["bg"], fg=t["hint_fg"],
-                            font=('', 6), cursor="hand2", padx=2)
+                            font=self._uf(-1), cursor="hand2", padx=2)
             info.pack(side='left', padx=(3, 0))
             info.bind("<Enter>", lambda e: info.configure(bg=self._theme()["hover"]))
             info.bind("<Leave>", lambda e: info.configure(bg=self._theme()["bg"]))
@@ -855,6 +936,7 @@ class App:
                 _update_label(True)
                 state["open"] = True
                 self._open_accordion[label]["open"] = True
+                self.root.after_idle(self._ensure_size)
 
         def close_fn(body=body, state=state):
             body.pack_forget()
@@ -865,20 +947,17 @@ class App:
 
         if not options or has_default:
             hdr_lbl.configure(text=label)
-            rbf = tk.Frame(hdr_row, bg=t["fg"], padx=1, pady=1)
-            rbl = tk.Label(rbf, text="▶", bg=t["bg"], fg=t["fg"],
-                           font=('', 7), padx=5, cursor="hand2")
-            rbl.pack()
-            rbf.pack(side='right', padx=(4, 2))
+            rbl = tk.Label(hdr_row, text="▶", bg=t["bg"], fg=t["fg"],
+                           font=self._uf(), padx=5, cursor="hand2")
+            rbl.pack(side='right', padx=(5, 3), pady=1)
             rbl.bind("<Button-1>", lambda e, fn=run_fn, jn=label:
                      self._inject_and_run(fn, None, jn))
             rbl.bind("<Enter>", lambda e, b=rbl: b.configure(bg=self._theme()["hover"]))
             rbl.bind("<Leave>", lambda e, b=rbl: b.configure(bg=self._theme()["bg"]))
         else:
-            for w in (hdr_f, hdr_lbl):
-                w.bind("<Button-1>", lambda e, fn=set_open: fn())
-                w.bind("<Enter>", lambda e: hdr_lbl.configure(bg=self._theme()["hover"]))
-                w.bind("<Leave>", lambda e: hdr_lbl.configure(bg=self._theme()["bg"]))
+            hdr_lbl.bind("<Button-1>", lambda e, fn=set_open: fn())
+            hdr_lbl.bind("<Enter>", lambda e: hdr_lbl.configure(bg=self._theme()["hover"]))
+            hdr_lbl.bind("<Leave>", lambda e: hdr_lbl.configure(bg=self._theme()["bg"]))
 
         if options and not has_default:
             for opt in options:
@@ -887,15 +966,13 @@ class App:
                 row.pack(fill='x', pady=1, padx=(18, 0))
 
                 opt_lbl = tk.Label(row, text=opt_label, bg=t["bg"], fg=t["fg"],
-                                   font=('', 7), anchor='w')
+                                   font=self._uf(), anchor='w')
                 opt_lbl.pack(side='left', fill='x', expand=True)
                 self._suboption_labels.setdefault(label, []).append(opt_lbl)
 
-                rbf = tk.Frame(row, bg=t["fg"], padx=1, pady=1)
-                rbl = tk.Label(rbf, text="▶", bg=t["bg"], fg=t["fg"],
-                               font=('', 7), padx=5, cursor="hand2")
-                rbl.pack()
-                rbf.pack(side='right', padx=(4, 2))
+                rbl = tk.Label(row, text="▶", bg=t["bg"], fg=t["fg"],
+                               font=self._uf(), padx=5, cursor="hand2")
+                rbl.pack(side='right', padx=(5, 3), pady=1)
 
                 rbl.bind("<Button-1>",
                          lambda e, fn=run_fn, o=opt, jn=label:
