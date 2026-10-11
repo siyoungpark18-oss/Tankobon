@@ -154,7 +154,7 @@ class App:
         "PDF Combiner":       "Combines multiple PDFs into one.",
         "PDF Splitter":       "Splits a PDF into parts at page numbers you specify.",
         "PDF to Images":      "Converts a PDF into individual image files. Resource intensive.",
-        "Add Input":          "Copies files or a folder into the Input directory for processing.",
+        "Add Input":          "Copies files or a folder into the Input directory for processing.\nZip (.zip / .cbz) files can be added as they are: every tool unpacks them automatically.",
         "Clear Input":        "Deletes everything in the Input folder. Your original files are not affected (Input only holds copies).\nTo be asked first, turn on Preferences > General > Confirm before Clearing.",
         "Status":             "Shows what is currently in the Input and Output folders.",
         "Clear Log":          "Clears the log display.",
@@ -185,14 +185,27 @@ class App:
         """Grow the window (never shrink it) so nothing in the sidebar is cut off and the log keeps room."""
         if not self.root.winfo_ismapped():
             return          # window size is not known yet; _on_first_map() calls this again
+        # A maximized / fullscreen window already fills the screen. Calling geometry() on it shrinks it
+        # and leaves a black, unpainted strip until the window is redrawn, so leave it completely alone.
+        try:
+            if self.root.state() == "zoomed":
+                return
+        except tk.TclError:
+            pass
+        try:
+            if self.root.attributes("-fullscreen"):
+                return
+        except tk.TclError:
+            pass
         try:
             self.root.update_idletasks()
             sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
             cur_w, cur_h = self.root.winfo_width(), self.root.winfo_height()
             need_h = (sum(c.winfo_reqheight() for c in self._left.winfo_children()) + 2 + 4 + 20)
             need_w = int(self._left.cget("width")) + 30 + self.MIN_LOG_W
-            new_w = min(max(cur_w, need_w), sw)
-            new_h = min(max(cur_h, need_h), sh - 80)        # 80 ≈ taskbar / title bar
+            # Only the SIZE WE WANT is capped to the screen; the current size is never reduced.
+            new_w = max(cur_w, min(need_w, sw))
+            new_h = max(cur_h, min(need_h, sh - 80))        # 80 ≈ taskbar / title bar
             if (new_w, new_h) != (cur_w, cur_h):
                 self.root.geometry(f"{new_w}x{new_h}")
         except tk.TclError:
@@ -580,7 +593,7 @@ class App:
         h1("Example Workflow")
         gap()
         text.insert(tk.END, "1. ", "h2")
-        body("Click Add Input and add your files or folder.")
+        body("Click Add Input and add your files, folder or zip files.")
         text.insert(tk.END, "2. ", "h2")
         body("Select a tool and run it.")
         text.insert(tk.END, "3. ", "h2")
