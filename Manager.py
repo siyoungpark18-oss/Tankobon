@@ -70,7 +70,7 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "preview_limit":              10,     # max lines a Log expansion shows (0 = show everything)
     "show_folder_stats":          True,   # show image count + size next to each folder in the Log
     "zip_extract_input":          True,   # unpack .zip / .cbz files found in Input before a tool runs
-    "zip_output":                 "off",  # "off" | "zip + folder" | "zip only"
+    "zip_compression":            "zip",  # "zip" = saved as a zip | "cbz" = saved as a .cbz (images only, else zip) | "folder" = loose files
 }
 
 #FUNCTIONS——————————————————————————————————————————————————————————————————————————————————————————————————
@@ -494,10 +494,14 @@ def _get_working_folders(src, use_sort=True):
 #         normal folder before it starts, so every tool treats them exactly like folders.
 #         The zip is removed once it has been unpacked (Input only ever holds copies).
 # OUTPUT: with Preferences > Tools > Zip Output turned on, every tool also packs its result
-#         into "<run name>.zip" inside its output folder.
+#         into "<run name>.zip" inside its output folder (the loose files are removed once the zip is checked).
+#         With zip_compression = "cbz" the archive is "<run name>.cbz" instead. A .cbz is a plain zip, but
+#         comic readers expect only images inside, so if the result contains anything else (PDFs, ...) the
+#         tool falls back to a normal .zip and says so.
 
 ARCHIVE_EXTENSIONS    = {'.zip', '.cbz'}                       # .cbz (comic book archive) is just a zip
-ZIP_OUTPUT_MODES      = ("off", "zip + folder", "zip only")
+ZIP_COMPRESSION_MODES = ("folder", "zip", "cbz")
+CBZ_IMAGE_EXTENSIONS  = IMAGE_EXTENSIONS | {'.webp'}           # what may go inside a .cbz
 _MAX_ARCHIVE_NESTING  = 3                                      # zip inside zip inside zip ...
 _JUNK_FILES           = {'.ds_store', 'thumbs.db', 'desktop.ini'}
 _ALREADY_COMPRESSED   = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.pdf', '.zip', '.cbz'}
@@ -660,17 +664,24 @@ def extract_archives(config, src, cancel=None):
 
 
 def zip_output(config, out, cancel=None):
-    """Packs everything in `out` into out/<out name>.zip, if Preferences > Tools > Zip Output asks for it.
-    'zip only' removes the loose files afterwards, but only once the zip has been checked."""
-    mode = config.get("zip_output", "off")
-    if mode not in ZIP_OUTPUT_MODES[1:]:
+    """Packs everything in `out` into out/<out name>.zip (or .cbz) when Preferences > Tools > Zip Compression
+    is "zip" (or "cbz"). The loose files are removed afterwards, but only once the archive has been checked."""
+    mode = config.get("zip_compression", "zip")
+    if mode not in ("zip", "cbz"):
         return
     files = [f for f in out.rglob("*") if f.is_file()]
     if not files:
         return
     files.sort(key=lambda x: natural_sort_key(_rel(x, out)))
-    zip_path = out / f"{out.name}.zip"
-    partial = out / f"{out.name}.zip.partial"
+    ext = ".zip"
+    if mode == "cbz":
+        others = sorted({f.suffix.lower() or "(no extension)" for f in files if f.suffix.lower() not in CBZ_IMAGE_EXTENSIONS})
+        if others:
+            print(f"  ⚠ CBZ needs images only, but the output also contains: {', '.join(others)}. Saving a .zip instead.")
+        else:
+            ext = ".cbz"
+    zip_path = out / f"{out.name}{ext}"
+    partial = out / f"{out.name}{ext}.partial"
     total = _total_size(files)
     try:
         if total > shutil.disk_usage(out).free:
@@ -679,7 +690,7 @@ def zip_output(config, out, cancel=None):
     except OSError:
         pass
 
-    print(f"  Zipping {len(files)} file(s)...")
+    print(f"  Packing {len(files)} file(s) into {zip_path.name}...")
     cancelled = False
     try:
         with zipfile.ZipFile(partial, "w", allowZip64=True, strict_timestamps=False) as zf:
@@ -692,13 +703,12 @@ def zip_output(config, out, cancel=None):
                 zf.write(f, _rel(f, out).replace(os.sep, "/"), compress_type=method)
         if cancelled:
             partial.unlink(missing_ok=True)
-            print("  Zipping cancelled. The output folder was kept as it is.")
+            print("  Packing cancelled. The output folder was kept as it is.")
             return
-        if mode == "zip only":
-            with zipfile.ZipFile(partial) as zf:                 # never delete originals before the zip is proven good
-                bad = zf.testzip()
-            if bad:
-                raise RuntimeError(f"zip check failed on '{bad}'")
+        with zipfile.ZipFile(partial) as zf:                     # never delete originals before the zip is proven good
+            bad = zf.testzip()
+        if bad:
+            raise RuntimeError(f"zip check failed on '{bad}'")
         os.replace(partial, zip_path)
     except Exception as e:
         try:
@@ -713,20 +723,19 @@ def zip_output(config, out, cancel=None):
 
     print(f"  Saved: {zip_path.name}  ({len(files)} file(s), {_fmt_size(zip_path.stat().st_size)})")
 
-    if mode == "zip only":
-        left = 0
-        for f in files:
-            try:
-                f.unlink()
-            except OSError:
-                left += 1
-        for d in sorted((p for p in out.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
-            try:
-                d.rmdir()
-            except OSError:
-                pass
-        print("  Zip only: loose files removed from the output folder." if not left
-              else f"  ⚠ Zip only: {left} loose file(s) could not be removed.")
+    left = 0
+    for f in files:
+        try:
+            f.unlink()
+        except OSError:
+            left += 1
+    for d in sorted((p for p in out.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    if left:
+        print(f"  ⚠ {left} loose file(s) could not be removed after zipping.")
 
 
 def _finalize_output(config, out, cancel=None):
@@ -1986,7 +1995,7 @@ def status(config):
                 print(f"  [folder] {d.name}/  ({file_count} file(s))")
 
         for f in sorted(files, key=lambda x: natural_sort_key(x.name)):
-            tag = "[zip]   " if f.suffix.lower() in ARCHIVE_EXTENSIONS else "[file]  "
+            tag = {".zip": "[zip]   ", ".cbz": "[cbz]   "}.get(f.suffix.lower(), "[file]  ")
             print(f"  {tag} {f.name}")
     else:
         print("Input  —  (doesn't exist)")
@@ -2025,7 +2034,7 @@ def info():
 'status'  'exit'
 
 Zip files (.zip / .cbz) in Input are unpacked automatically.
-Set "zip_output" in the config to also get the result as a zip.
+Results are saved as a zip by default; choose cbz or folder in Preferences > Tools > Zip Compression.
 
 All output goes to output/
 """)
