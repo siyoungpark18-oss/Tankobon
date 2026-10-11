@@ -16,7 +16,8 @@ from Manager import (
     load_config, save_config, get_input,
     folders_to_pdf, images_to_pdf, folder_renamer, file_renamer,
     combine_image_sets, image_converter, pdf_splitter, pdf_combiner,
-    pdf_to_images, status, find_duplicates, DEFAULTS, SENTINEL, take_config_warning
+    pdf_to_images, status, find_duplicates, DEFAULTS, SENTINEL, take_config_warning,
+    settle_runs, recover_stale_runs
 )
 
 #IMPORT FROM LOG, PREFERENCES AND THEMES—————————————————————————————————————————————————————————————————
@@ -76,6 +77,10 @@ class App:
         warning = take_config_warning()
         if warning:
             print(warning)
+        try:
+            recover_stale_runs(self.config)       # results left behind by a crash or force-quit
+        except Exception:
+            pass
         if not (self.config.get("input") and self.config.get("output")):
             print("Welcome! First set your Input and Output folders: click ≡ (top left), then Paths.")
         self._tick()
@@ -1117,6 +1122,10 @@ class App:
             except Exception as e:
                 self._report_job_error(job_name, e)
             finally:
+                try:
+                    settle_runs(self.config)      # a tool that stopped early leaves its results in a hidden folder
+                except Exception:
+                    traceback.print_exc()
                 with self._jobs_lock:
                     count = self._running_jobs.get(job_name, 1) - 1
                     if count <= 0:
@@ -1246,7 +1255,7 @@ class App:
 
         target = out_dir
         if self.config.get("open_output_recent", False):
-            subfolders = [f for f in out_dir.iterdir() if f.is_dir()]
+            subfolders = [f for f in out_dir.iterdir() if f.is_dir() and not f.name.startswith('.')]
             if subfolders:
                 target = max(subfolders, key=lambda f: f.stat().st_mtime)
                 print(f"  Output (most recent): {target}")
@@ -1297,7 +1306,7 @@ class App:
                     result = [folder] if folder else []
                 elif c == "output":
                     out_dir = Path(self.config["output"]) / "output"
-                    result = [str(f) for f in out_dir.iterdir()] if out_dir.exists() else []
+                    result = [str(f) for f in out_dir.iterdir() if not f.name.startswith('.')] if out_dir.exists() else []
             except Exception as e:
                 print(f"  Could not open the file picker: {e}")
             finally:
