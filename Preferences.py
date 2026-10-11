@@ -41,6 +41,8 @@ PREF_TIPS = {
     "throttle_mem":               "Throttles the Operation if RAM usage exceeds the threshold.\n If your computer already exceeds this limit, it will throttle until it drops below it.\n 0 removes the limit, and can cause your computer to crash.",
     "log_blank_lines":            "Double spaces most text in the log.\nDisable for a more compact log.",
     "preview_limit":              "How many lines a Log expansion lists before it shows '… and N more'.\n Type any whole number. 0 shows everything.\n Anything that isn't a whole number is replaced with 10.",
+    "zip_extract_input":          "Zip (.zip) and comic archive (.cbz) files in Input are unpacked into folders before any tool runs, so they work like normal folders.\n The zip is removed after it is unpacked (Input only holds copies). Zips inside zips are unpacked too.\n Zips that are broken or password-protected are left alone and reported.",
+    "zip_output":                 "Also packs each result into a zip file named after the run, inside its output folder.\n 'zip + folder' keeps the loose files next to the zip.\n 'zip only' keeps just the zip, and only removes the loose files after the zip has been checked.",
     "show_folder_stats":          "Shows the number of images and the total size next to each folder in the Log.\n Needs a quick look at each file's size, so turn this off if scanning very large Inputs feels slow.",
 }
 
@@ -307,6 +309,8 @@ def show_preferences(app):
         ("default_dedupe_mode",         "Find Duplicates: Default Mode", "combo", ["ask", "keep one copy", "delete all"]),
         ("default_dedupe_hash",         "Find Duplicates: Hash Method",  "combo", ["exact", "perceptual"]),
         ("default_dpi",                 "Default DPI (PDF to Images)",   "combo", ["ask","72","96","150","200","300","600"]),
+        ("zip_extract_input",           "Unpack Zip Files in Input",     "check", None),
+        ("zip_output",                  "Zip Output (all tools)",        "combo", ["off", "zip + folder", "zip only"]),
     ]
 
     hotkey_fields = [
@@ -328,7 +332,7 @@ def show_preferences(app):
                 row=row, column=0, sticky='w', pady=4, padx=(0, 16))
             _info_btn(page, row, key, PREF_TIPS)
             if typ == "check":
-                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats") else False
+                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats", "zip_extract_input") else False
                 v = tk.BooleanVar(value=bool(app.config.get(key, default)))
                 _check_btn(page, v).grid(row=row, column=1, sticky='w')
             elif typ == "entry":
@@ -486,7 +490,7 @@ def show_preferences(app):
             if key in ("auto_clear_input", "confirm_clear", "replace_output", "sort_output",
                        "guide_empty_input", "show_tooltips", "allow_concurrent_jobs",
                        "log_default_expanded", "show_timestamps", "open_output_recent", "log_blank_lines",
-                       "show_folder_stats"):
+                       "show_folder_stats", "zip_extract_input"):
                 app.config[key] = bool(val)
             elif key in ("throttle_cpu", "throttle_mem"):
                 app.config[key] = _safe_int(val, 80, 0, 100)
