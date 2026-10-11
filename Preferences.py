@@ -16,6 +16,7 @@ PREF_TIPS = {
     "ui_mode":                    "Classic UI uses a combination of simple buttons and the keyboard to pick options.\n The Dropdown UI places options under a tool header.\n\n When tools are defaulted to a specific option, options are no longer prompted for either way.",
     "allow_concurrent_jobs":      "Run multiple different tools at the same time. With this, outputs can generate in quick succession.\n To prevent new outputs from replacing old ones, use the run name option and disable replace output.\n\n Generally leads to more errors and bugs and tends to spread computer resources thin.",
     "auto_clear_input":           "Automatically Empties the Input folder after an Operation is completed.",
+    "confirm_clear":              "Asks 'Are you sure?' before Clear Input / Clear Output deletes anything.\n Off by default: Input only holds copies of your files,\n but Output results are not backed up anywhere.",
     "ask_run_name":               "Prompts you to name each output. The folder generated in output will use that name.\n Does not name individual files.",
     "replace_output":             "When enabled, the most recent output replaces an older output with the same name.\n\n If you don't name or sort your runs, the new output will simply replace the previous one, so you can re-run an operation if you make a mistake",
     "sort_output":                "Organises the output into subfolders named after each operation.\n If outputs are also named, they are named within the operation folder.",
@@ -168,14 +169,9 @@ def show_preferences(app):
             paths[key].set(chosen)
             refresh()
 
-    def set_both():
-        inp = paths["input"].get()
-        if not inp:
-            pick("input")
-            inp = paths["input"].get()
-        if inp:
-            paths["output"].set(inp)
-            refresh()
+    def clear_path(key):
+        paths[key].set("")
+        refresh()
 
     def refresh():
         for key in ("input", "output"):
@@ -253,18 +249,19 @@ def show_preferences(app):
             info.bind("<Leave>", lambda e, w=info: (
                 w.configure(bg=t["bg"]), _hide_pref_tip()))
         r += 1
-        e = tk.Entry(p, width=40, bg=t["entry_bg"], fg=t["entry_fg"], readonlybackground=t["entry_bg"])
+        e = tk.Entry(p, width=40, bg=t["entry_bg"], fg=t["entry_fg"], readonlybackground=t["entry_bg"],
+                     insertbackground=t["entry_fg"],
+                     relief='flat', highlightthickness=1,
+                     highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"])
         e.insert(0, paths[key].get())
         e.configure(state='readonly')
         e.grid(row=r, column=0, sticky='w')
         lbl_vals[key] = e
-        _pref_btn(p, "Browse…", lambda k=key: pick(k)).grid(
-            row=r, column=1, padx=(6, 0), sticky='w')
+        btns = tk.Frame(p, bg=t["bg"])
+        btns.grid(row=r, column=1, padx=(6, 0), sticky='w')
+        _pref_btn(btns, "Browse…", lambda k=key: pick(k)).pack(side='left')
+        _pref_btn(btns, "Clear", lambda k=key: clear_path(k)).pack(side='left', padx=(2, 0))
         r += 1
-
-    _pref_btn(p, "Set Both", set_both).grid(
-        row=r, column=0, sticky='w', pady=(6, 0))
-    r += 1
 
     # ── GENERAL / TOOLS / HOTKEYS / THROTTLE tabs ──────────────────────────
     general_fields = [
@@ -272,6 +269,7 @@ def show_preferences(app):
         ("log_blank_lines",       "Double Space in Log",            "check", None),
         ("allow_concurrent_jobs", "Concurrent Operations",          "check", None),
         ("auto_clear_input",      "Clear Input after Operation",    "check", None),
+        ("confirm_clear",         "Confirm before Clearing",        "check", None),
         ("ask_run_name",          "Run Name",                       "check", None),
         ("replace_output",        "Replace Output",                 "check", None),
         ("sort_output",           "Sort Output by Operation",       "check", None),
@@ -393,7 +391,9 @@ def show_preferences(app):
             theme_vars.setdefault(mode, {})[key] = v
 
             e = tk.Entry(p, textvariable=v, width=9, font=('Courier', 8),
-                         bg=t["entry_bg"], fg=t["entry_fg"])
+                         bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["entry_fg"],
+                         relief='flat', highlightthickness=1,
+                     highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"])
             e.grid(row=row, column=col, sticky='w', padx=(0, 2))
 
             swatch = Label(p, width=2, bg=current, relief='flat')
@@ -451,8 +451,7 @@ def show_preferences(app):
             if val and not Path(val).is_dir():
                 messagebox.showwarning("Invalid Path", f"This folder does not exist:\n{val}", parent=win)
                 return
-            if val:
-                new_paths[key] = val
+            new_paths[key] = val          # an empty value means "clear this directory"
         if vars_["hotkey_continue"].get() == vars_["hotkey_cancel"].get():
             messagebox.showwarning("Hotkeys", "The Continue and Cancel hotkeys must be different keys.", parent=win)
             return
@@ -462,7 +461,7 @@ def show_preferences(app):
         app.config.update(new_paths)
         for key, v in vars_.items():
             val = v.get()
-            if key in ("auto_clear_input", "replace_output", "sort_output",
+            if key in ("auto_clear_input", "confirm_clear", "replace_output", "sort_output",
                        "guide_empty_input", "show_tooltips", "allow_concurrent_jobs",
                        "log_default_expanded", "show_timestamps", "open_output_recent", "log_blank_lines"):
                 app.config[key] = bool(val)
