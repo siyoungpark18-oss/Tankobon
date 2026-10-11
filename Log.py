@@ -209,7 +209,7 @@ class LogRedirect(io.TextIOBase):
             cfg = {"foreground": t["log_success"]}
         elif (s.startswith("Saved:") or s.startswith("converted:") or
               s.startswith("Total:") or s.startswith("PDFs saved:") or
-              s.startswith("combined:") or s.startswith("renamed:") or
+              s.startswith("combined:") or s.startswith("renamed:") or s.startswith("EPUBs saved:") or
               s.startswith("copied:") or s.startswith("pages exported:") or
               s.startswith("scanned:") or s.startswith("extracted:")):
             tag = "log_bold"
