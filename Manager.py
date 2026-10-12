@@ -1463,18 +1463,31 @@ def images_to_pdf(config, cancel=None):
     print("")
 
 
+def _folder_format_title(config):
+    return {"zip": "ZIP", "cbz": "CBZ", "uncompressed": "Uncompressed"}.get(
+        config.get("zip_compression", "zip"), "ZIP")
+
+
+def _folder_tool_name(config, name):
+    if config.get("zip_compression", "zip") == "uncompressed":
+        return name
+    if name == "Folder Renamer":
+        return f"{_folder_format_title(config)} Renamer"
+    return f"{_folder_format_title(config)} {name}"
+
+
 def folder_renamer(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
-    print("Folder Renamer")
+    print(_folder_tool_name(config, "Folder Renamer"))
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
         return _cancel()
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
-    out = get_output(config, "folder renamer", run_name)
+    out = get_output(config, f"{format_title.lower()} renamer", run_name)
     print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
@@ -1721,7 +1734,7 @@ def combine_image_sets(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
-    print("Combine Image Sets")
+    print(_folder_tool_name(config, "Combine Image Sets"))
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
         return _cancel()
@@ -1816,7 +1829,7 @@ def image_converter(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
-    print("Image Converter")
+    print(_folder_tool_name(config, "Image Converter"))
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
         return _cancel()
@@ -1932,7 +1945,7 @@ def find_duplicates(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
-    print("Find Duplicates")
+    print(_folder_tool_name(config, "Find Duplicates"))
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
         return _cancel()
