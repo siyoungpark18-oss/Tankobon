@@ -77,6 +77,16 @@ class App:
         self._last_input_count = -1
         self._last_count_check = 0.0
         self._ui_size = self._clamp_ui_size(self.config.get("ui_font_size", self.UI_BASE))
+        old_ui_size = self.config.get("ui_font_size")
+        self.config["ui_font_size"] = self._ui_size
+        original_log_size = self.config.get("log_font_size")
+        try:
+            old_log_size = int(self.config.get("log_font_size", 11))
+        except (TypeError, ValueError):
+            old_log_size = 11
+        self.config["log_font_size"] = max(10, min(24, old_log_size))
+        if old_ui_size != self.config["ui_font_size"] or original_log_size != self.config["log_font_size"]:
+            save_config(self.config)
         self._mini_lbls = []                        # title-row buttons (resized together)
         self._moon_image = self._load_moon_icon()
         patch_input()
@@ -186,7 +196,7 @@ class App:
 
     # ── sidebar text size ─────────────────────────────────────────────────────
 
-    UI_BASE, UI_MIN, UI_MAX = 7, 6, 16      # UI_BASE is the size the app always used
+    UI_BASE, UI_MIN, UI_MAX = 10, 10, 20
     SIDEBAR_BASE_W = 200                    # sidebar width (px) at UI_BASE, before the -/+ buttons
     MIN_LOG_W = 400                         # the window grows rather than squeeze the log below this
 
@@ -198,7 +208,7 @@ class App:
 
     def _uf(self, delta=0, bold=False):
         """Font for sidebar text. delta is relative to the current sidebar size."""
-        size = max(5, self._ui_size + delta)
+        size = max(10, self._ui_size + delta)
         return ('', size, 'bold') if bold else ('', size)
 
     def _ensure_size(self):
@@ -516,7 +526,7 @@ class App:
             hint = f"  ({continue_key} = confirm  •  {cancel_key} = cancel)"
 
         tk.Label(self._input_frame, text=hint, fg=t["hint_fg"],
-                 bg=t["bg"], font=('Courier', 7)).pack(side='left')
+                 bg=t["bg"], font=('Courier', 10)).pack(side='left')
 
         var   = tk.StringVar()
         entry = tk.Entry(self._input_frame, textvariable=var, font=('Courier', 11),
@@ -585,7 +595,7 @@ class App:
         text.tag_configure("h1",   font=('Courier', 13, 'bold'))
         text.tag_configure("h2",   font=('Courier', 11, 'bold'))
         text.tag_configure("body", font=('Courier', 10))
-        text.tag_configure("dim",  font=('Courier', 9), foreground="gray")
+        text.tag_configure("dim",  font=('Courier', 10), foreground="gray")
 
         def h1(s):   text.insert(tk.END, s + "\n", "h1")
         def h2(s):   text.insert(tk.END, s + "\n", "h2")
@@ -636,7 +646,7 @@ class App:
         win.geometry("600x620")
         win.resizable(False, False)
 
-        text = scrolledtext.ScrolledText(win, wrap='word', font=('Courier', 8),
+        text = scrolledtext.ScrolledText(win, wrap='word', font=('Courier', 10),
                                          padx=10, pady=10)
         text.pack(fill='both', expand=True)
 
@@ -710,7 +720,7 @@ class App:
     # ── ui build ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        self._log_font_size = self.config.get("log_font_size", 8)
+        self._log_font_size = self.config.get("log_font_size", 11)
 
         left = tk.Frame(self.root, width=self.SIDEBAR_BASE_W)
         left.pack(side='left', fill='y', padx=10, pady=10)
@@ -788,11 +798,11 @@ class App:
         format_row.pack(fill='x', pady=(2, 4))
         format_theme = self._theme()
         tk.Label(format_row, text="File production:", bg=format_theme["bg"],
-                 fg=format_theme["hint_fg"], font=self._uf(-1)).pack(side='left', padx=(1, 5))
+                 fg=format_theme["hint_fg"], font=self._uf()).pack(side='left', padx=(1, 5))
         self._format_buttons = {}
         for fmt in ("pdf", "epub"):
             button = tk.Label(format_row, text=fmt.upper(), bg=format_theme["bg"],
-                              fg=format_theme["fg"], font=self._uf(-1, bold=True),
+                              fg=format_theme["fg"], font=self._uf(bold=True),
                               cursor="hand2", padx=5, pady=1)
             button.pack(side='left', padx=1)
             button.bind("<Button-1>", lambda e, f=fmt: self._set_doc_format(f))
@@ -805,11 +815,11 @@ class App:
         folder_format_row.pack(fill='x', pady=(0, 4))
         folder_theme = self._theme()
         tk.Label(folder_format_row, text="Folder production:", bg=folder_theme["bg"],
-                 fg=folder_theme["hint_fg"], font=self._uf(-1)).pack(side='left', padx=(1, 5))
+                 fg=folder_theme["hint_fg"], font=self._uf()).pack(side='left', padx=(1, 5))
         self._folder_format_buttons = {}
         for fmt, label in (("cbz", "CBZ"), ("zip", "ZIP"), ("uncompressed", "Uncompressed")):
             button = tk.Label(folder_format_row, text=label, bg=folder_theme["bg"],
-                              fg=folder_theme["fg"], font=self._uf(-1, bold=True),
+                              fg=folder_theme["fg"], font=self._uf(bold=True),
                               cursor="hand2", padx=4, pady=1)
             button.pack(side='left', padx=1)
             button.bind("<Button-1>", lambda e, f=fmt: self._set_folder_format(f))
@@ -838,12 +848,12 @@ class App:
         log_header = tk.Frame(self._right)
         log_header.pack(fill='x')
 
-        tk.Label(log_header, text="Log", font=('', 8, 'bold')).pack(side='left')
-        self._status_lbl = tk.Label(log_header, text="", font=('Courier', 9))
+        tk.Label(log_header, text="Log", font=('', 10, 'bold')).pack(side='left')
+        self._status_lbl = tk.Label(log_header, text="", font=('Courier', 10))
         self._status_lbl.pack(side='left', padx=(8, 0))
 
         def _change_font(delta):
-            self._log_font_size = max(7, min(24, self._log_font_size + delta))
+            self._log_font_size = max(10, min(24, self._log_font_size + delta))
             self.log.configure(font=('Courier', self._log_font_size))
             self.config["log_font_size"] = self._log_font_size
             save_config(self.config)
