@@ -597,6 +597,25 @@ def _warn_name_collisions(config, preview):
             s.add(f"    {new.name}  ←  " + ",  ".join(o.name for o in olds))
 
 
+def friendly_error(error):
+    """Turn common file-operation errors into a short explanation and a next step."""
+    detail = str(error).strip()
+    text = detail.lower()
+    if "no space left" in text or "disk full" in text or "not enough space" in text:
+        return "The disk is full. Free space on the output drive, then try again."
+    if "permission denied" in text or "access is denied" in text or "operation not permitted" in text:
+        return "Permission denied. Check folder access and close any app using the file, then try again."
+    if "no such file or directory" in text or "cannot find the path" in text:
+        return "The file or folder could not be found. Check that it still exists and try again."
+    if any(term in text for term in ("not a valid zip", "badzipfile", "crc-32", "checksum", "cannot identify image", "unidentifiedimageerror", "truncated", "unexpected eof", "damaged", "corrupt")):
+        return "The file appears to be corrupt or incomplete. Try opening it; if it will not open, replace it with a fresh copy."
+    if any(term in text for term in ("pdfreaderror", "pdf read", "invalid pdf", "malformed pdf", " eof marker not found")):
+        return "The PDF could not be read. Open it in a PDF viewer; if it will not open, replace it with a fresh copy."
+    if detail:
+        return f"Could not complete this file operation. Check that the file opens and the destination is writable, then try again. Details: {detail}"
+    return "Could not complete this file operation. Check that the file opens and the destination is writable, then try again."
+
+
 def _print_summary(config, copied=0, failed=None, skipped=None, label="processed"):
     parts = [f"  {label}: {copied}"]
     if failed:
@@ -607,7 +626,7 @@ def _print_summary(config, copied=0, failed=None, skipped=None, label="processed
     if failed:                                  # failures are never truncated: you need to see all of them
         with _Section(config, f"  Failed files ({len(failed)})", unlimited=True) as s:
             for p, reason in failed:
-                s.add(f"    {p.name}: {reason}")
+                s.add(f"    {p.name}: {friendly_error(reason)}")
     if skipped:
         with _Section(config, f"  Skipped files ({len(skipped)})") as s:
             for p, reason in skipped:
