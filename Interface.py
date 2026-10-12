@@ -13,31 +13,17 @@ import webbrowser
 
 #IMPORT FROM MANAGER——————————————————————————————————————————————————————————————————————————————————————
 from Manager import (
-    load_config, save_config, get_input,
-    folders_to_pdf, images_to_pdf, folder_renamer, file_renamer,
-    combine_image_sets, image_converter, pdf_splitter, pdf_combiner,
-    pdf_to_images, status, find_duplicates, DEFAULTS, SENTINEL, take_config_warning,
+    load_config, save_config, get_input, status, SENTINEL, take_config_warning,
     settle_runs, recover_stale_runs, friendly_error
 )
+from ToolRegistry import TOOL_REGISTRY, OPTION_LABELS, TOGGLEABLE, UTILITY_TOOLTIPS
 
 #IMPORT FROM LOG, PREFERENCES AND THEMES—————————————————————————————————————————————————————————————————
-from Log import LogRedirect, input_queue, thread_safe_input, patch_input, EXPAND, COLLAPSE
+from Log import LogRedirect, input_queue, patch_input, EXPAND, COLLAPSE
 from Preferences import show_preferences
 from Themes import THEMES
 
 #INPUT QUEUE——————————————————————————————————————————————————————————————————————————————————————————————
-
-
-TOOL_LABELS = {
-    "Folders to PDF", "Images to PDF", "Folders to EPUB", "Images to EPUB",
-    "ZIP Renamer", "CBZ Renamer", "Uncompressed Renamer",
-    "ZIP Combine Image Sets", "CBZ Combine Image Sets", "Uncompressed Combine Image Sets",
-    "ZIP Image Converter", "CBZ Image Converter", "Uncompressed Image Converter",
-    "ZIP Find Duplicates", "CBZ Find Duplicates", "Uncompressed Find Duplicates",
-    "Folder Renamer", "File Renamer", "Combine Image Sets", "Image Converter", "Find Duplicates",
-    "PDF Combiner", "EPUB Combiner", "PDF Splitter", "EPUB Splitter",
-    "PDF to Images", "EPUB to Images",
-}
 
 
 #APP——————————————————————————————————————————————————————————————————————————————————————————————————
@@ -50,11 +36,11 @@ class App:
         self.current_doc_format = self.config.get("default_doc_format", "epub")
         if self.current_doc_format not in ("pdf", "epub"):
             self.current_doc_format = "epub"
-        self.current_folder_format = self.config.get("zip_compression", "zip")
+        self.current_folder_format = self.config.get("zip_compression", "cbz")
         if self.current_folder_format == "folder":
             self.current_folder_format = "uncompressed"
         if self.current_folder_format not in ("cbz", "zip", "uncompressed"):
-            self.current_folder_format = "zip"
+            self.current_folder_format = "cbz"
         self.config["zip_compression"] = self.current_folder_format
         self._refresh_format_tool_names()
         self._migrate_legacy_theme_colors()
@@ -114,85 +100,10 @@ class App:
             save_config(self.config)
             self.root.after(500, self._show_help)
 
-    TOOL_OPTIONS = {
-        "Folders to PDF":     ["combine", "individual"],
-        "Images to PDF":      ["combine", "reorder & combine"],
-        "Folder Renamer":     ["prefix", "suffix", "replace", "extract number"],
-        "File Renamer":       ["prefix", "suffix", "replace", "sequence"],
-        "Combine Image Sets": [],
-        "Image Converter":    ["jpg", "png", "webp", "bmp", "tiff"],
-        "Find Duplicates":    ["keep one copy", "delete all"],
-        "PDF Combiner":       [],
-        "PDF Splitter":       [],
-        "PDF to Images":      ["jpg", "png"],
-        "Add Input":          ["files", "folder", "output"],
-    }
-
-    TOOL_MODE_CONFIG_KEY = {
-        "Folders to PDF":  "default_folders_to_pdf_mode",
-        "Folder Renamer":  "default_folder_renamer_mode",
-        "File Renamer":    "default_file_renamer_mode",
-        "Image Converter": "default_img_fmt",
-        "Find Duplicates": "default_dedupe_mode",
-        "PDF to Images":   "default_pdf_to_images_fmt",
-        "Images to PDF":   "default_images_to_pdf_mode",
-
-    }
-
-    OPTION_LABELS = {
-        "combine":        "Combine all → one file",
-        "individual":     "One file per folder",
-        "prefix":         "Prefix",
-        "suffix":         "Suffix",
-        "replace":        "Find & Replace",
-        "extract number": "Extract Number",
-        "sequence":       "Sequence",
-        "jpg":            "JPG",
-        "png":            "PNG",
-        "webp":           "WebP",
-        "bmp":            "BMP",
-        "tiff":           "TIFF",
-        "keep one copy":  "Keep one copy",
-        "delete all":     "Delete all instances",
-        "files":          "Files",
-        "folder":         "Individual Folder",
-        "output":         "From Output",
-        "reorder & combine": "Reorder & Combine",
-    }
-
-    TOGGLEABLE = [
-        ("show_folders_to_pdf", "Folder", "Folders to PDF",     "run_folders_to_pdf"),
-        ("show_images_to_pdf",  "Folder", "Images to PDF",      "run_images_to_pdf"),
-        ("show_folder_renamer", "Folder", "Folder Renamer",     "run_folder_renamer"),
-        ("show_file_renamer",   "Folder", "File Renamer",       "run_file_renamer"),
-        ("show_combine",        "Folder", "Combine Image Sets", "run_combine"),
-        ("show_converter",      "Folder", "Image Converter",    "run_converter"),
-        ("show_duplicates",     "Folder", "Find Duplicates",    "run_duplicates"),
-        ("show_pdf_combiner",   "Folder", "PDF Combiner",       "run_pdf_combiner"),
-        ("show_pdf_splitter",   "File",   "PDF Splitter",       "run_pdf_splitter"),
-        ("show_pdf_to_images",  "File",   "PDF to Images",      "run_pdf_to_images"),
-    ]
-
-    TOOLTIPS = {
-        "Folders to PDF":     "Turns the image folders in Input into PDFs: one combined PDF, or one PDF per folder.\nWrites EPUBs instead if Preferences > Tools > PDF Tools: Output Format is epub.",
-        "Images to PDF":      "Converts all images in Input into a single PDF (or EPUB, see Preferences > Tools > PDF Tools: Output Format).",
-        "Folder Renamer":     "Renames folders: add a prefix or suffix, find & replace, or keep just the number (handy for sorting chapters). Renamed copies go to Output.",
-        "File Renamer":       "Renames files by prefix, suffix, find/replace, or sequence numbering. Renamed copies go to Output.",
-        "Combine Image Sets": "Merges multiple folders of images into one flat folder, preserving order.",
-        "Image Converter":    "Converts all images in Input to a chosen format (jpg, png, webp, etc).",
-        "Find Duplicates":    "Finds duplicate images (exact, or look-alike: set in Preferences > Tools) and copies the rest to Output. Nothing in Input is changed.",
-        "PDF Combiner":       "Combines multiple PDFs into one. EPUBs work too: only EPUBs give an EPUB, any PDF in the mix gives a PDF.",
-        "PDF Splitter":       "Splits a PDF or EPUB into parts at page numbers you specify.",
-        "PDF to Images":      "Converts a PDF into individual image files. Resource intensive.\nAlso takes the page images out of image-based EPUBs.",
-        "Add Input":          "Copies files or a folder into the Input directory for processing.\nZip (.zip / .cbz) files can be added as they are: every tool unpacks them automatically.",
-        "Clear Input":        "Deletes everything in the Input folder. Your original files are not affected (Input only holds copies).\nTo be asked first, turn on Preferences > General > Confirm before Clearing.",
-        "Status":             "Shows what is currently in the Input and Output folders.",
-        "Clear Log":          "Clears the log display.",
-        "Clear Output":       "Deletes everything in the Output folder.\nTo be asked first, turn on Preferences > General > Confirm before Clearing.",
-        "Cancel Operation":   "Stops the running job at its next safe point. PDF writing itself cannot be interrupted.",
-        "Open Input":         "Opens the input folder in Finder/Explorer.",
-        "Open Output":        "Opens the output folder in Finder/Explorer and prints the path to the log.",
-    }
+    TOOL_REGISTRY = TOOL_REGISTRY
+    OPTION_LABELS = OPTION_LABELS
+    TOGGLEABLE = TOGGLEABLE
+    UTILITY_TOOLTIPS = UTILITY_TOOLTIPS
 
     # ── sidebar text size ─────────────────────────────────────────────────────
 
@@ -432,13 +343,13 @@ class App:
                 bare = label.replace("⚠ ", "")
                 if bare == "Add Input":
                     lbl.configure(fg=t["fg"], bg=t["hover"] if empty else t["bg"])
-                elif bare in TOOL_LABELS:
+                elif bare.startswith("tool:"):
                     lbl.configure(fg=t["hint_fg"] if empty else t["fg"], bg=t["bg"])
             except tk.TclError:
                 pass
 
         for tool_label, opt_lbls in self._suboption_labels.items():
-            color = t["hint_fg"] if (empty and tool_label != "Add Input") else t["fg"]
+            color = t["hint_fg"] if (empty and tool_label != "add_input") else t["fg"]
             for lbl in opt_lbls:
                 try:
                     lbl.configure(fg=color)
@@ -528,14 +439,9 @@ class App:
         if prompt.strip():
             print(f"{prompt.strip()}")
 
-        is_pick = "Waiting for key" in prompt
-
-        if is_pick:
-            hint = "  (Enter = Files  •  Space = Folder  •  Escape = Cancel)"
-        else:
-            continue_key = self.config.get("hotkey_continue", "Return")
-            cancel_key   = self.config.get("hotkey_cancel", "Escape")
-            hint = f"  ({continue_key} = confirm  •  {cancel_key} = cancel)"
+        continue_key = self.config.get("hotkey_continue", "Return")
+        cancel_key   = self.config.get("hotkey_cancel", "Escape")
+        hint = f"  ({continue_key} = confirm  •  {cancel_key} = cancel)"
 
         self._mark_hint(tk.Label(self._input_frame, text=hint, fg=t["hint_fg"],
                                  bg=t["bg"], font=('Courier', 10))).pack(side='left')
@@ -550,30 +456,16 @@ class App:
         entry.focus_set()
 
         # Every handler returns "break" so the key press is not ALSO typed into the box.
-        if is_pick:
-            def pick_files(e=None):
-                self._finish_input("FILES")
-                return "break"
-            def pick_folder(e=None):
-                self._finish_input("FOLDER")
-                return "break"
-            def cancel(e=None):
-                self._finish_input(SENTINEL)
-                return "break"
-            entry.bind("<Return>", pick_files)
-            entry.bind("<space>",  pick_folder)
-            entry.bind("<Escape>", cancel)
-        else:
-            def confirm(e=None):
-                self._finish_input(var.get())
-                return "break"
+        def confirm(e=None):
+            self._finish_input(var.get())
+            return "break"
 
-            def cancel(e=None):
-                self._finish_input(SENTINEL)
-                return "break"
+        def cancel(e=None):
+            self._finish_input(SENTINEL)
+            return "break"
 
-            entry.bind(f"<{continue_key}>", confirm)
-            entry.bind(f"<{cancel_key}>",   cancel)
+        entry.bind(f"<{continue_key}>", confirm)
+        entry.bind(f"<{cancel_key}>",   cancel)
 
     def _finish_input(self, value):
         """Close the question box and hand the answer to the job that asked."""
@@ -722,9 +614,9 @@ class App:
         self._place_tooltip(widget, text, below=below, force_light=force_light)
 
     def _tool_tip_text(self, label, has_default):
-        text = self.TOOLTIPS[label]
+        text = self.TOOL_REGISTRY[label]["tip"]
         if has_default:
-            mode = self.config.get(self.TOOL_MODE_CONFIG_KEY[label])
+            mode = self.config.get(self.TOOL_REGISTRY[label]["config_key"])
             text += (f"\n\nRuns with your default: {self.OPTION_LABELS.get(mode, mode)}."
                      f"\nChange it in Preferences (≡) > Tools.")
         return text
@@ -907,56 +799,39 @@ class App:
 
     # ── button building ───────────────────────────────────────────────────────
 
+    def _tool_label(self, tool_id):
+        """Build the visible label; dispatch and saved settings use stable tool IDs."""
+        doc_format = self.current_doc_format.upper()
+        folder_format = self.current_folder_format.upper()
+        doc_labels = {
+            "folders_to_file": f"Folders to {doc_format}",
+            "images_to_file": f"Images to {doc_format}",
+            "document_combiner": f"{doc_format} Combiner",
+            "document_splitter": f"{doc_format} Splitter",
+            "document_to_images": f"{doc_format} to Images",
+        }
+        if tool_id in doc_labels:
+            return doc_labels[tool_id]
+        folder_labels = {
+            "folder_renamer": "Renamer",
+            "combine_image_sets": "Combine Image Sets",
+            "image_converter": "Image Converter",
+            "find_duplicates": "Find Duplicates",
+        }
+        if tool_id in folder_labels:
+            if self.current_folder_format == "uncompressed":
+                return "Folder Renamer" if tool_id == "folder_renamer" else folder_labels[tool_id]
+            prefix = "" if self.current_folder_format == "uncompressed" else f"{folder_format} "
+            return prefix + folder_labels[tool_id]
+        return {"file_renamer": "File Renamer", "add_input": "Add Input"}.get(
+            tool_id, tool_id.replace("_", " ").title())
+
     def _refresh_format_tool_names(self):
-        """Use the selected document and folder production formats in tool names."""
-        fmt = self.current_doc_format
-        fmt = fmt if fmt in ("pdf", "epub") else "epub"
-        self.current_doc_format = fmt
-        title = fmt.upper()
-        folder_title = self.current_folder_format.upper() if self.current_folder_format != "uncompressed" else "Uncompressed"
-        folder_prefix = None if self.current_folder_format == "uncompressed" else folder_title
-        aliases = {"Folders to PDF": f"Folders to {title}",
-                   "Images to PDF": f"Images to {title}",
-                   "PDF Combiner": f"{title} Combiner",
-                   "PDF Splitter": f"{title} Splitter",
-                   "PDF to Images": f"{title} to Images",
-                   "Folder Renamer": f"{folder_prefix} Renamer" if folder_prefix else "Folder Renamer",
-                   "Combine Image Sets": f"{folder_prefix} Combine Image Sets" if folder_prefix else "Combine Image Sets",
-                   "Image Converter": f"{folder_prefix} Image Converter" if folder_prefix else "Image Converter",
-                   "Find Duplicates": f"{folder_prefix} Find Duplicates" if folder_prefix else "Find Duplicates"}
-        self.folder_tool_labels = {name: aliases[name] for name in
-                                   ("Folder Renamer", "Combine Image Sets", "Image Converter", "Find Duplicates")}
-        self.folder_renamer_label = self.folder_tool_labels["Folder Renamer"]
-        cls = type(self)
-        self.TOGGLEABLE = [(key, section, aliases.get(label, label), method)
-                           for key, section, label, method in cls.TOGGLEABLE]
-        self.TOOL_OPTIONS = dict(cls.TOOL_OPTIONS)
-        self.TOOL_MODE_CONFIG_KEY = dict(cls.TOOL_MODE_CONFIG_KEY)
-        self.TOOL_FUNCS = dict(cls.TOOL_FUNCS)
-        self.TOOLTIPS = dict(cls.TOOLTIPS)
-        for old, new in aliases.items():
-            self.TOOL_OPTIONS[new] = cls.TOOL_OPTIONS[old]
-            if old in cls.TOOL_MODE_CONFIG_KEY:
-                self.TOOL_MODE_CONFIG_KEY[new] = cls.TOOL_MODE_CONFIG_KEY[old]
-            self.TOOL_FUNCS[new] = cls.TOOL_FUNCS[old]
-            if old == "Folders to PDF":
-                self.TOOLTIPS[new] = f"Turns image folders into {title} books. Combine creates one book from all folders; Individual creates one book per folder, with the images as its pages."
-            elif old == "Images to PDF":
-                self.TOOLTIPS[new] = f"Combines the images in Input into one {title} book, with the images as its pages."
-            elif old == "PDF Combiner":
-                self.TOOLTIPS[new] = f"Combines PDF and image-based EPUB inputs into one {title}. PDFs are rendered to page images when EPUB is selected."
-            elif old == "PDF Splitter":
-                self.TOOLTIPS[new] = f"Splits the selected PDF or image-based EPUB into {title} parts at the page ranges you enter."
-            elif old == "PDF to Images":
-                self.TOOLTIPS[new] = "Exports page images from PDFs and image-based EPUBs. The tool name follows the selected file production format."
-            elif old == "Folder Renamer":
-                self.TOOLTIPS[new] = f"Renames folders and writes the results using the selected {folder_title} folder production format."
-            elif old == "Combine Image Sets":
-                self.TOOLTIPS[new] = f"Combines image folders into one set using the selected {folder_title} folder production format."
-            elif old == "Image Converter":
-                self.TOOLTIPS[new] = f"Converts images and writes the results using the selected {folder_title} folder production format."
-            else:
-                self.TOOLTIPS[new] = f"Finds duplicate images and writes the results using the selected {folder_title} folder production format."
+        """Validate selected formats; labels can change without changing tool identity."""
+        if self.current_doc_format not in ("pdf", "epub"):
+            self.current_doc_format = "epub"
+        if self.current_folder_format not in ("cbz", "zip", "uncompressed"):
+            self.current_folder_format = "cbz"
 
     def _set_doc_format(self, fmt):
         if fmt not in ("pdf", "epub") or fmt == self.current_doc_format:
@@ -1011,24 +886,23 @@ class App:
         t = self._theme()
         from collections import OrderedDict
         tool_rows = OrderedDict()
-        for key, section, label, method in self.TOGGLEABLE:
+        for key, section, tool_id in self.TOGGLEABLE:
             if self.config.get(key, True):
-                tool_rows.setdefault(section, []).append(
-                    (label, getattr(self, method)))
+                tool_rows.setdefault(section, []).append((tool_id, self._tool_label(tool_id)))
 
         for section_label, items in tool_rows.items():
             tk.Label(self._btn_frame, text=section_label,
                      font=self._uf(bold=True), bg=t["bg"], fg=t["fg"]
                      ).pack(anchor='w', pady=(8, 2))
-            for label, run_fn in items:
-                self._make_tool_accordion(self._btn_frame, label, run_fn)
+            for tool_id, label in items:
+                self._make_tool_accordion(self._btn_frame, tool_id, label)
 
         tk.Label(self._btn_frame, text="Input",
                  font=self._uf(bold=True), bg=t["bg"], fg=t["fg"]
                  ).pack(anchor='w', pady=(8, 2))
-        self._make_tool_accordion(self._btn_frame, "Add Input", self.pick_files)
+        self._make_tool_accordion(self._btn_frame, "add_input", "Add Input")
         for label, cmd in [("Clear Input", self.clear_input), ("Open Input", self.open_input)]:
-            self._make_button(self._btn_frame, label, cmd, tooltip=self.TOOLTIPS.get(label))
+            self._make_button(self._btn_frame, label, cmd, tooltip=self.UTILITY_TOOLTIPS.get(label))
 
         tk.Label(self._btn_frame, text="Utility",
                  font=self._uf(bold=True), bg=t["bg"], fg=t["fg"]
@@ -1040,7 +914,7 @@ class App:
             ("Clear Output", self.clear_output),
             ("Cancel Operation",   self.cancel_job),
         ]:
-            self._make_button(self._btn_frame, label, cmd, tooltip=self.TOOLTIPS.get(label))
+            self._make_button(self._btn_frame, label, cmd, tooltip=self.UTILITY_TOOLTIPS.get(label))
 
     def _make_button(self, parent, text, cmd, tooltip=None):
         t = self._theme()
@@ -1066,10 +940,11 @@ class App:
 
         return lbl
 
-    def _make_tool_accordion(self, parent, label, run_fn):
+    def _make_tool_accordion(self, parent, tool_id, label):
         t = self._theme()
-        options = self.TOOL_OPTIONS.get(label, [])
-        config_key  = self.TOOL_MODE_CONFIG_KEY.get(label)
+        registry = self.TOOL_REGISTRY[tool_id]
+        options = registry.get("options", [])
+        config_key = registry.get("config_key")
         has_default = (config_key is not None and self.config.get(config_key, "ask") != "ask")
 
         outer   = tk.Frame(parent, bg=t["bg"])
@@ -1081,15 +956,15 @@ class App:
                            font=self._uf(), width=22, cursor="hand2")
         hdr_lbl.pack(side='left', padx=1, pady=1)
 
-        self._btn_labels[label] = hdr_lbl
+        self._btn_labels["Add Input" if tool_id == "add_input" else f"tool:{tool_id}"] = hdr_lbl
 
-        if self.config.get("show_tooltips", True) and label in self.TOOLTIPS:
+        if self.config.get("show_tooltips", True) and registry.get("tip"):
             info = self._mark_hint(tk.Label(hdr_row, text="i", bg=t["bg"], fg=t["hint_fg"],
                                             font=self._uf(-1), cursor="hand2", padx=2))
             info.pack(side='left', padx=(3, 0))
             info.bind("<Enter>", lambda e: info.configure(bg=self._theme()["hover"]))
             info.bind("<Leave>", lambda e: info.configure(bg=self._theme()["bg"]))
-            self._show_tooltip(info, self._tool_tip_text(label, has_default))
+            self._show_tooltip(info, self._tool_tip_text(tool_id, has_default))
 
         body  = tk.Frame(outer, bg=t["bg"])
         state = {"open": False}
@@ -1099,7 +974,7 @@ class App:
 
         _update_label(False)
 
-        def set_open(label=label, state=state, body=body):
+        def set_open(label=tool_id, state=state, body=body):
             for lbl_key, info in self._open_accordion.items():
                 if lbl_key != label and info["open"]:
                     info["close"]()
@@ -1120,12 +995,12 @@ class App:
             _update_label(False)
             state["open"] = False
 
-        self._open_accordion[label] = {"open": False, "close": close_fn}
+        self._open_accordion[tool_id] = {"open": False, "close": close_fn}
 
         if not options or has_default:
             # Nothing to choose: the box itself runs the tool (same as Clear Input, Status, ...).
             hdr_lbl.configure(text=label)
-            on_click = lambda e, fn=run_fn, jn=label: self._inject_and_run(fn, None, jn)
+            on_click = lambda e, jn=tool_id: self._inject_and_run(None, None, jn)
         else:
             on_click = lambda e, fn=set_open: fn()          # opens/closes the option list
         hdr_lbl.bind("<Button-1>", on_click)
@@ -1147,48 +1022,23 @@ class App:
                                    font=self._uf(), width=opt_chars, anchor='w', padx=4,
                                    cursor="hand2")
                 opt_lbl.pack(side='left', padx=(indent + 1, 1), pady=1)
-                self._suboption_labels.setdefault(label, []).append(opt_lbl)
+                self._suboption_labels.setdefault(tool_id, []).append(opt_lbl)
 
                 opt_lbl.bind("<Button-1>",
-                             lambda e, fn=run_fn, o=opt, jn=label:
-                             self._inject_and_run(fn, o, jn))
+                             lambda e, o=opt, jn=tool_id:
+                             self._inject_and_run(None, o, jn))
                 opt_lbl.bind("<Enter>", lambda e, b=opt_lbl: b.configure(bg=self._theme()["hover"]))
                 opt_lbl.bind("<Leave>", lambda e, b=opt_lbl: b.configure(bg=self._theme()["bg"]))
 
     # ── preferences / tabs ────────────────────────────────────────────────────
 
     def _show_preferences(self):
-        before = self.config.get("default_doc_format", "epub")
-        before_folder = self.config.get("zip_compression", "zip")
         show_preferences(self)
-        if self.config.get("default_doc_format", "epub") != before:
-            self.current_doc_format = self.config.get("default_doc_format", "epub")
-            self._refresh_format_tool_names()
-            self._rebuild_buttons()
-            self._update_format_selector()
-        if self.config.get("zip_compression", "zip") != before_folder:
-            self.current_folder_format = self.config.get("zip_compression", "zip")
-            if self.current_folder_format == "folder":
-                self.current_folder_format = "uncompressed"
-            self._update_format_selector()
 
     # ── job running ───────────────────────────────────────────────────────────
 
-    TOOL_FUNCS = {
-        "Folders to PDF":     folders_to_pdf,
-        "Images to PDF":      images_to_pdf,
-        "Folder Renamer":     folder_renamer,
-        "File Renamer":       file_renamer,
-        "Combine Image Sets": combine_image_sets,
-        "Image Converter":    image_converter,
-        "Find Duplicates":    find_duplicates,
-        "PDF Combiner":       pdf_combiner,
-        "PDF Splitter":       pdf_splitter,
-        "PDF to Images":      pdf_to_images,
-    }
-
     # Which folders must be set before a job can run (everything else needs both).
-    JOB_NEEDS = {"Add Input": ("input",), "Clear Input": ("input",), "Clear Output": ("output",)}
+    JOB_NEEDS = {"add_input": ("input",), "clear_input": ("input",), "clear_output": ("output",)}
 
     def _path_problem(self, *needs):
         """Returns a message if a required folder is not set or has disappeared, else None."""
@@ -1203,51 +1053,54 @@ class App:
 
     def _busy_jobs(self):
         with self._jobs_lock:
-            return [n for n in self._running_jobs if n != "Status"]
+            return [n for n in self._running_jobs if n != "status"]
 
-    def _inject_and_run(self, run_fn, choice, job_name):
-        if job_name == "Add Input":
-            self._run(lambda c=choice: self._pick_files_work(c), job_name=job_name)
+    def _inject_and_run(self, _run_fn, choice, tool_id):
+        job_name = self._tool_label(tool_id)
+        if tool_id == "add_input":
+            self._run(lambda c=choice: self._pick_files_work(c), job_name=job_name, job_id=tool_id)
             return
 
-        tool = self.TOOL_FUNCS.get(job_name)
+        registry = self.TOOL_REGISTRY[tool_id]
+        tool = registry.get("handler")
         if tool is None:
-            self._run(run_fn, job_name=job_name)
+            self._run(_run_fn, job_name=job_name, job_id=tool_id)
             return
 
         # The tool gets its OWN copy of the settings with the chosen option filled in.
         # The real settings (self.config) are never touched, so nothing can leak into config.json.
         cfg = self._production_config()
-        config_key = self.TOOL_MODE_CONFIG_KEY.get(job_name)
+        config_key = registry.get("config_key")
         if choice is not None and config_key:
             cfg[config_key] = choice
-        self._run(lambda: tool(cfg, self.cancel_event), job_name=job_name)
+        self._run(lambda: tool(cfg, self.cancel_event), job_name=job_name, job_id=tool_id)
 
-    def _run(self, fn, ignore_lock=False, job_name="Job"):
-        problem = self._path_problem(*self.JOB_NEEDS.get(job_name, ("input", "output")))
+    def _run(self, fn, ignore_lock=False, job_name="Job", job_id=None):
+        job_id = job_id or job_name.lower().replace(" ", "_")
+        problem = self._path_problem(*self.JOB_NEEDS.get(job_id, ("input", "output")))
         if problem:
             print(problem)
             return
 
         with self._jobs_lock:
-            busy = [n for n in self._running_jobs if n != "Status"]
+            busy = [n for n in self._running_jobs if n != "status"]
             refusal = None
             if busy and not ignore_lock:
                 if not self.config.get("allow_concurrent_jobs", False):
                     refusal = "  A job is already running. Wait for it to finish or cancel it first."
-                elif job_name in self._running_jobs:
+                elif job_id in self._running_jobs:
                     refusal = f"  {job_name} is already running."
             if refusal is None:
                 if not busy:
                     # Only reset Cancel when nothing else is running, otherwise starting
                     # (or clicking Status) would silently undo the user's Cancel.
                     self.cancel_event.clear()
-                self._running_jobs[job_name] = self._running_jobs.get(job_name, 0) + 1
+                self._running_jobs[job_id] = self._running_jobs.get(job_id, 0) + 1
         if refusal:
             print(refusal)
             return
 
-        if job_name != "Add Input" and self.config.get("show_timestamps", True):
+        if job_id != "add_input" and self.config.get("show_timestamps", True):
             line_len = max(10, int(55 - (self._log_font_size - 7) * 2.5))
             timestamp = datetime.now().strftime("%H:%M:%S")
             prefix = "\n" if self.config.get("log_blank_lines", False) else ""
@@ -1266,11 +1119,11 @@ class App:
                 except Exception:
                     traceback.print_exc()
                 with self._jobs_lock:
-                    count = self._running_jobs.get(job_name, 1) - 1
+                    count = self._running_jobs.get(job_id, 1) - 1
                     if count <= 0:
-                        self._running_jobs.pop(job_name, None)
+                        self._running_jobs.pop(job_id, None)
                     else:
-                        self._running_jobs[job_name] = count
+                        self._running_jobs[job_id] = count
                 self._jobs_changed.set()      # the main thread updates the label and Input count
 
         threading.Thread(target=wrapper, daemon=True).start()
@@ -1307,7 +1160,8 @@ class App:
         else:
             names = []
             for name, count in jobs.items():
-                names.append(f"{name}" if count == 1 else f"{name} ×{count}")
+                display_name = self._tool_label(name) if name in self.TOOL_REGISTRY else name.replace("_", " ").title()
+                names.append(f"{display_name}" if count == 1 else f"{display_name} ×{count}")
             self._status_lbl.configure(text="● " + "  |  ".join(names))
 
     # ── utility actions ───────────────────────────────────────────────────────
@@ -1408,24 +1262,12 @@ class App:
 
     # ── file picking ──────────────────────────────────────────────────────────
 
-    def pick_files(self, choice=None):
-        self._run(lambda: self._pick_files_work(choice), job_name="Add Input")
-
-    def _pick_files_work(self, choice=None):
+    def _pick_files_work(self, choice):
         """Runs in a worker thread. File dialogs are opened by the main thread (see _call_in_main)."""
         input_dir = get_input(self.config)
         input_dir.mkdir(parents=True, exist_ok=True)
 
-        if choice is None:
-            print("Add to Input")
-            print("  Enter = Files   Space = Folder   Escape = Cancel")
-            raw = thread_safe_input("Waiting for key...").strip()
-            c = {"FILES": "files", "FOLDER": "folder"}.get(raw)
-            if c is None:
-                print("  Cancelled.")
-                return
-        else:
-            c = choice
+        c = choice
 
         if c == "output":
             problem = self._path_problem("output")
@@ -1475,52 +1317,6 @@ class App:
 
     # ── tool runners ──────────────────────────────────────────────────────────
 
-    def run_folders_to_pdf(self):
-        config = self._production_config()
-        self._run(lambda: folders_to_pdf(config, self.cancel_event),
-                  job_name=f"Folders to {self.current_doc_format.upper()}")
-
-    def run_images_to_pdf(self):
-        config = self._production_config()
-        self._run(lambda: images_to_pdf(config, self.cancel_event),
-                  job_name=f"Images to {self.current_doc_format.upper()}")
-
-    def run_folder_renamer(self):
-        config = self._production_config()
-        self._run(lambda: folder_renamer(config, self.cancel_event),
-                  job_name=self.folder_renamer_label)
-
-    def run_file_renamer(self):
-        config = self._production_config()
-        self._run(lambda: file_renamer(config, self.cancel_event), job_name="File Renamer")
-
-    def run_combine(self):
-        config = self._production_config()
-        self._run(lambda: combine_image_sets(config, self.cancel_event), job_name=self.folder_tool_labels["Combine Image Sets"])
-
-    def run_converter(self):
-        config = self._production_config()
-        self._run(lambda: image_converter(config, self.cancel_event), job_name=self.folder_tool_labels["Image Converter"])
-
-    def run_duplicates(self):
-        config = self._production_config()
-        self._run(lambda: find_duplicates(config, self.cancel_event), job_name=self.folder_tool_labels["Find Duplicates"])
-
-    def run_pdf_splitter(self):
-        config = self._production_config()
-        self._run(lambda: pdf_splitter(config, self.cancel_event),
-                  job_name=f"{self.current_doc_format.upper()} Splitter")
-
-    def run_pdf_combiner(self):
-        config = self._production_config()
-        self._run(lambda: pdf_combiner(config, self.cancel_event),
-                  job_name=f"{self.current_doc_format.upper()} Combiner")
-
-    def run_pdf_to_images(self):
-        config = self._production_config()
-        self._run(lambda: pdf_to_images(config, self.cancel_event),
-                  job_name=f"{self.current_doc_format.upper()} to Images")
-
     def run_status(self):
         if self._status_running:
             return
@@ -1532,7 +1328,7 @@ class App:
             finally:
                 self._status_running = False
 
-        self._run(_run, ignore_lock=True, job_name="Status")
+        self._run(_run, ignore_lock=True, job_name="Status", job_id="status")
 
 
 
