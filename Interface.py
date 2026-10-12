@@ -12,11 +12,11 @@ import traceback
 import webbrowser
 
 #IMPORT FROM MANAGER——————————————————————————————————————————————————————————————————————————————————————
-from Manager import (
-    load_config, save_config, get_input, status, SENTINEL, take_config_warning,
-    settle_runs, recover_stale_runs, friendly_error
-)
+from Manager import status, SENTINEL, friendly_error
+from ManagerConfig import load_config, save_config, get_input, take_config_warning
+from ManagerOutput import settle_runs, recover_stale_runs
 from ToolRegistry import TOOL_REGISTRY, OPTION_LABELS, TOGGLEABLE, UTILITY_TOOLTIPS
+from ToolNames import tool_label
 
 #IMPORT FROM LOG, PREFERENCES AND THEMES—————————————————————————————————————————————————————————————————
 from Log import LogRedirect, input_queue, patch_input, EXPAND, COLLAPSE
@@ -42,7 +42,7 @@ class App:
         if self.current_folder_format not in ("cbz", "zip", "uncompressed"):
             self.current_folder_format = "cbz"
         self.config["zip_compression"] = self.current_folder_format
-        self._refresh_format_tool_names()
+        self._validate_production_formats()
         self._migrate_legacy_theme_colors()
         self.cancel_event = threading.Event()
         self._jobs_lock = threading.Lock()          # _running_jobs is touched by several threads
@@ -340,10 +340,9 @@ class App:
 
         for label, lbl in self._btn_labels.items():
             try:
-                bare = label.replace("⚠ ", "")
-                if bare == "Add Input":
+                if label == "Add Input":
                     lbl.configure(fg=t["fg"], bg=t["hover"] if empty else t["bg"])
-                elif bare.startswith("tool:"):
+                elif label.startswith("tool:"):
                     lbl.configure(fg=t["hint_fg"] if empty else t["fg"], bg=t["bg"])
             except tk.TclError:
                 pass
@@ -800,33 +799,10 @@ class App:
     # ── button building ───────────────────────────────────────────────────────
 
     def _tool_label(self, tool_id):
-        """Build the visible label; dispatch and saved settings use stable tool IDs."""
-        doc_format = self.current_doc_format.upper()
-        folder_format = self.current_folder_format.upper()
-        doc_labels = {
-            "folders_to_file": f"Folders to {doc_format}",
-            "images_to_file": f"Images to {doc_format}",
-            "document_combiner": f"{doc_format} Combiner",
-            "document_splitter": f"{doc_format} Splitter",
-            "document_to_images": f"{doc_format} to Images",
-        }
-        if tool_id in doc_labels:
-            return doc_labels[tool_id]
-        folder_labels = {
-            "folder_renamer": "Renamer",
-            "combine_image_sets": "Combine Image Sets",
-            "image_converter": "Image Converter",
-            "find_duplicates": "Find Duplicates",
-        }
-        if tool_id in folder_labels:
-            if self.current_folder_format == "uncompressed":
-                return "Folder Renamer" if tool_id == "folder_renamer" else folder_labels[tool_id]
-            prefix = "" if self.current_folder_format == "uncompressed" else f"{folder_format} "
-            return prefix + folder_labels[tool_id]
-        return {"file_renamer": "File Renamer", "add_input": "Add Input"}.get(
-            tool_id, tool_id.replace("_", " ").title())
+        """Resolve a tool's display name from its stable ID and selected formats."""
+        return tool_label(tool_id, self.current_doc_format, self.current_folder_format)
 
-    def _refresh_format_tool_names(self):
+    def _validate_production_formats(self):
         """Validate selected formats; labels can change without changing tool identity."""
         if self.current_doc_format not in ("pdf", "epub"):
             self.current_doc_format = "epub"
@@ -837,7 +813,7 @@ class App:
         if fmt not in ("pdf", "epub") or fmt == self.current_doc_format:
             return
         self.current_doc_format = fmt
-        self._refresh_format_tool_names()
+        self._validate_production_formats()
         self._rebuild_buttons()
         self._update_format_selector()
 
@@ -845,7 +821,7 @@ class App:
         if fmt not in ("cbz", "zip", "uncompressed") or fmt == self.current_folder_format:
             return
         self.current_folder_format = fmt
-        self._refresh_format_tool_names()
+        self._validate_production_formats()
         self._rebuild_buttons()
         self._update_format_selector()
 
@@ -1000,7 +976,7 @@ class App:
         if not options or has_default:
             # Nothing to choose: the box itself runs the tool (same as Clear Input, Status, ...).
             hdr_lbl.configure(text=label)
-            on_click = lambda e, jn=tool_id: self._inject_and_run(None, None, jn)
+            on_click = lambda e, jn=tool_id: self._inject_and_run(None, jn)
         else:
             on_click = lambda e, fn=set_open: fn()          # opens/closes the option list
         hdr_lbl.bind("<Button-1>", on_click)
@@ -1026,7 +1002,7 @@ class App:
 
                 opt_lbl.bind("<Button-1>",
                              lambda e, o=opt, jn=tool_id:
-                             self._inject_and_run(None, o, jn))
+                             self._inject_and_run(o, jn))
                 opt_lbl.bind("<Enter>", lambda e, b=opt_lbl: b.configure(bg=self._theme()["hover"]))
                 opt_lbl.bind("<Leave>", lambda e, b=opt_lbl: b.configure(bg=self._theme()["bg"]))
 
@@ -1055,17 +1031,14 @@ class App:
         with self._jobs_lock:
             return [n for n in self._running_jobs if n != "status"]
 
-    def _inject_and_run(self, _run_fn, choice, tool_id):
+    def _inject_and_run(self, choice, tool_id):
         job_name = self._tool_label(tool_id)
         if tool_id == "add_input":
             self._run(lambda c=choice: self._pick_files_work(c), job_name=job_name, job_id=tool_id)
             return
 
         registry = self.TOOL_REGISTRY[tool_id]
-        tool = registry.get("handler")
-        if tool is None:
-            self._run(_run_fn, job_name=job_name, job_id=tool_id)
-            return
+        tool = registry["handler"]
 
         # The tool gets its OWN copy of the settings with the chosen option filled in.
         # The real settings (self.config) are never touched, so nothing can leak into config.json.
