@@ -75,6 +75,7 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "guide_empty_input":          True,
     "show_tooltips":              True,
     "allow_concurrent_jobs":      False,
+    "last_tool_options":          {},
     "themes":                     {},
     "preview_limit":              10,     # max lines a Log expansion shows (0 = show everything)
     "show_folder_stats":          True,   # show image count + size next to each folder in the Log
