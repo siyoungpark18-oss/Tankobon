@@ -47,9 +47,9 @@ class App:
         self.root.title("Tankobon")
         self.root.resizable(True, True)
         self.config = load_config()
-        self.current_doc_format = self.config.get("default_doc_format", "pdf")
+        self.current_doc_format = self.config.get("default_doc_format", "epub")
         if self.current_doc_format not in ("pdf", "epub"):
-            self.current_doc_format = "pdf"
+            self.current_doc_format = "epub"
         self.current_folder_format = self.config.get("zip_compression", "zip")
         if self.current_folder_format == "folder":
             self.current_folder_format = "uncompressed"
@@ -353,6 +353,11 @@ class App:
         self._update_format_selector()
         self._update_button_states()
 
+    @staticmethod
+    def _mark_hint(widget):
+        widget._tankobon_hint = True
+        return widget
+
     def _apply_to_widget(self, widget, t):
         if isinstance(widget, tk.Toplevel):
             return
@@ -361,7 +366,8 @@ class App:
             if cls in ("Frame",):
                 widget.configure(bg=t["bg"])
             elif cls in ("Label",):
-                widget.configure(bg=t["bg"], fg=t["fg"])
+                fg = t["hint_fg"] if getattr(widget, "_tankobon_hint", False) else t["fg"]
+                widget.configure(bg=t["bg"], fg=fg)
             elif cls in ("Button",):
                 widget.configure(bg=t["btn_bg"], fg=t["btn_fg"],
                                  activebackground=t["bg"], activeforeground=t["fg"])
@@ -496,8 +502,14 @@ class App:
                 self._refresh_input_count()
         except tk.TclError:
             pass                                      # window is being destroyed
-        if not self._closing:
-            self.root.after(25, self._tick)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            if not self._closing:
+                try:
+                    self.root.after(25, self._tick)
+                except tk.TclError:
+                    pass
 
     def _on_close(self):
         self._closing = True
@@ -525,8 +537,8 @@ class App:
             cancel_key   = self.config.get("hotkey_cancel", "Escape")
             hint = f"  ({continue_key} = confirm  •  {cancel_key} = cancel)"
 
-        tk.Label(self._input_frame, text=hint, fg=t["hint_fg"],
-                 bg=t["bg"], font=('Courier', 10)).pack(side='left')
+        self._mark_hint(tk.Label(self._input_frame, text=hint, fg=t["hint_fg"],
+                                 bg=t["bg"], font=('Courier', 10))).pack(side='left')
 
         var   = tk.StringVar()
         entry = tk.Entry(self._input_frame, textvariable=var, font=('Courier', 11),
@@ -797,8 +809,8 @@ class App:
         format_row = tk.Frame(left)
         format_row.pack(fill='x', pady=(2, 4))
         format_theme = self._theme()
-        tk.Label(format_row, text="File production:", bg=format_theme["bg"],
-                 fg=format_theme["hint_fg"], font=self._uf()).pack(side='left', padx=(1, 5))
+        self._mark_hint(tk.Label(format_row, text="File production:", bg=format_theme["bg"],
+                                 fg=format_theme["hint_fg"], font=self._uf())).pack(side='left', padx=(1, 5))
         self._format_buttons = {}
         for fmt in ("pdf", "epub"):
             button = tk.Label(format_row, text=fmt.upper(), bg=format_theme["bg"],
@@ -814,8 +826,8 @@ class App:
         folder_format_row = tk.Frame(left)
         folder_format_row.pack(fill='x', pady=(0, 4))
         folder_theme = self._theme()
-        tk.Label(folder_format_row, text="Folder production:", bg=folder_theme["bg"],
-                 fg=folder_theme["hint_fg"], font=self._uf()).pack(side='left', padx=(1, 5))
+        self._mark_hint(tk.Label(folder_format_row, text="Folder production:", bg=folder_theme["bg"],
+                                 fg=folder_theme["hint_fg"], font=self._uf())).pack(side='left', padx=(1, 5))
         self._folder_format_buttons = {}
         for fmt, label in (("cbz", "CBZ"), ("zip", "ZIP"), ("uncompressed", "Uncompressed")):
             button = tk.Label(folder_format_row, text=label, bg=folder_theme["bg"],
@@ -836,6 +848,7 @@ class App:
             status_row, text="[0 items]",
             font=('Courier', self._ui_size), fg=t["hint_fg"], bg=t["bg"], anchor='w'
         )
+        self._mark_hint(self._input_status_lbl)
         self._input_status_lbl.pack(side='left')
 
         self._btn_frame = tk.Frame(left)
@@ -897,7 +910,7 @@ class App:
     def _refresh_format_tool_names(self):
         """Use the selected document and folder production formats in tool names."""
         fmt = self.current_doc_format
-        fmt = fmt if fmt in ("pdf", "epub") else "pdf"
+        fmt = fmt if fmt in ("pdf", "epub") else "epub"
         self.current_doc_format = fmt
         title = fmt.upper()
         folder_title = self.current_folder_format.upper() if self.current_folder_format != "uncompressed" else "Uncompressed"
@@ -1044,8 +1057,8 @@ class App:
         self._btn_labels[text] = lbl
 
         if tooltip and self.config.get("show_tooltips", True):
-            info = tk.Label(row, text="i", bg=t["bg"], fg=t["hint_fg"],
-                            font=self._uf(-1), cursor="hand2", padx=2)
+            info = self._mark_hint(tk.Label(row, text="i", bg=t["bg"], fg=t["hint_fg"],
+                                            font=self._uf(-1), cursor="hand2", padx=2))
             info.pack(side='left', padx=(3, 0))
             info.bind("<Enter>", lambda e: info.configure(bg=self._theme()["hover"]))
             info.bind("<Leave>", lambda e: info.configure(bg=self._theme()["bg"]))
@@ -1071,8 +1084,8 @@ class App:
         self._btn_labels[label] = hdr_lbl
 
         if self.config.get("show_tooltips", True) and label in self.TOOLTIPS:
-            info = tk.Label(hdr_row, text="i", bg=t["bg"], fg=t["hint_fg"],
-                            font=self._uf(-1), cursor="hand2", padx=2)
+            info = self._mark_hint(tk.Label(hdr_row, text="i", bg=t["bg"], fg=t["hint_fg"],
+                                            font=self._uf(-1), cursor="hand2", padx=2))
             info.pack(side='left', padx=(3, 0))
             info.bind("<Enter>", lambda e: info.configure(bg=self._theme()["hover"]))
             info.bind("<Leave>", lambda e: info.configure(bg=self._theme()["bg"]))
@@ -1145,11 +1158,11 @@ class App:
     # ── preferences / tabs ────────────────────────────────────────────────────
 
     def _show_preferences(self):
-        before = self.config.get("default_doc_format", "pdf")
+        before = self.config.get("default_doc_format", "epub")
         before_folder = self.config.get("zip_compression", "zip")
         show_preferences(self)
-        if self.config.get("default_doc_format", "pdf") != before:
-            self.current_doc_format = self.config.get("default_doc_format", "pdf")
+        if self.config.get("default_doc_format", "epub") != before:
+            self.current_doc_format = self.config.get("default_doc_format", "epub")
             self._refresh_format_tool_names()
             self._rebuild_buttons()
             self._update_format_selector()
