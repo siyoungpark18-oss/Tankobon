@@ -360,13 +360,6 @@ def show_preferences(app):
                 v = tk.StringVar(value=raw_val)
                 FlatDropdown(page, v, opts, t, win).grid(row=row, column=1, sticky='w')
             vars_[key] = v
-            if key == "show_tooltips":
-                def apply_tooltip_setting(*_, variable=v):
-                    app.config["show_tooltips"] = bool(variable.get())
-                    from Manager import save_config
-                    save_config(app.config)
-                    app._rebuild_buttons()
-                v.trace_add("write", apply_tooltip_setting)
 
     p = pages["General"]
     Label(p, text="General", font=('', 8, 'bold'), bg=t["bg"]).grid(
@@ -463,8 +456,8 @@ def show_preferences(app):
           bg=t["bg"], font=('', 8)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
     build_fields(p, advanced_fields, start_row=2)
 
-    # ── Save / Cancel ──────────────────────────────────────────────────────
-    def _collect_themes():
+    # ── Immediate settings ─────────────────────────────────────────────────
+    def _collect_themes(show_warning=False):
         """Returns {mode: {key: colour}} containing ONLY colours that differ from the built-in defaults
         (so future default improvements still reach you), or None if a hex code is invalid."""
         bad = []
@@ -473,8 +466,9 @@ def show_preferences(app):
                 val = v.get().strip()
                 if not hex_re.match(val):
                     bad.append(f"{mode}/{key}: '{val}'")
-        if bad:
+        if bad and show_warning:
             messagebox.showwarning("Invalid Hex", "Fix these:\n" + "\n".join(bad), parent=win)
+        if bad:
             return None
         custom = {}
         for mode, keys in theme_vars.items():
@@ -484,59 +478,97 @@ def show_preferences(app):
                 custom[mode] = changed
         return custom
 
-    def save():
-        # 1) validate everything, changing nothing yet
-        custom_themes = _collect_themes()
-        if custom_themes is None:
-            return
-        new_paths = {}
-        for key in ("input", "output"):
-            val = paths[key].get().strip()
-            if val and not Path(val).is_dir():
-                messagebox.showwarning("Invalid Path", f"This folder does not exist:\n{val}", parent=win)
+    from Manager import save_config
+    pending = {}
+    last_raw = {key: var.get() for key, var in vars_.items()}
+
+    def _normalise(key, raw):
+        if key in ("auto_clear_input", "confirm_clear_input", "confirm_clear_output", "replace_output", "sort_output", "ask_run_name",
+                   "guide_empty_input", "show_tooltips", "allow_concurrent_jobs", "log_default_expanded",
+                   "show_timestamps", "open_output_recent", "log_blank_lines", "show_folder_stats",
+                   "zip_extract_input", "keep_documents_unarchived"):
+            return bool(raw)
+        if key in ("throttle_cpu", "throttle_mem"):
+            return _safe_int(raw, 80, 0, 100)
+        if key == "default_dpi":
+            return raw if raw == "ask" else _safe_int(raw, 72, 10, 1200)
+        if key == "min_free_gb":
+            return _safe_int(raw, 10, 0)
+        if key == "preview_limit":
+            return _safe_int(raw, 10, 0)
+        if key == "default_sort":
+            return raw if raw in ("natural", "none") else "natural"
+        return raw
+
+    def _apply_side_effects(key):
+        if key == "default_doc_format":
+            app.current_doc_format = app.config[key]
+            app._refresh_format_tool_names()
+            app._rebuild_buttons()
+            app._update_format_selector()
+        elif key == "zip_compression":
+            app.current_folder_format = app.config[key]
+            app._update_format_selector()
+        elif key in ("show_tooltips", "ui_mode", "guide_empty_input"):
+            app._rebuild_buttons()
+        elif key in {item[0] for item in app.TOGGLEABLE}:
+            app._rebuild_buttons()
+        else:
+            app._update_button_states()
+
+    def _persist_setting(key, raw):
+        if key in ("hotkey_continue", "hotkey_cancel"):
+            other = "hotkey_cancel" if key == "hotkey_continue" else "hotkey_continue"
+            if raw == vars_[other].get():
+                messagebox.showwarning("Hotkeys", "The Continue and Cancel hotkeys must be different keys.", parent=win)
+                vars_[key].set(last_raw[key])
                 return
-            new_paths[key] = val          # an empty value means "clear this directory"
-        if vars_["hotkey_continue"].get() == vars_["hotkey_cancel"].get():
-            messagebox.showwarning("Hotkeys", "The Continue and Cancel hotkeys must be different keys.", parent=win)
-            return
-
-        # 2) everything is valid: apply
-        app.config["themes"] = custom_themes
-        app.config.update(new_paths)
-        for key, v in vars_.items():
-            val = v.get()
-            if key in ("auto_clear_input", "confirm_clear_input", "confirm_clear_output", "replace_output", "sort_output", "ask_run_name",
-                       "guide_empty_input", "show_tooltips", "allow_concurrent_jobs",
-                       "log_default_expanded", "show_timestamps", "open_output_recent", "log_blank_lines",
-                       "show_folder_stats", "zip_extract_input", "keep_documents_unarchived"):
-                app.config[key] = bool(val)
-            elif key in ("throttle_cpu", "throttle_mem"):
-                app.config[key] = _safe_int(val, 80, 0, 100)
-            elif key == "default_dpi":
-                app.config[key] = val if val == "ask" else _safe_int(val, 72, 10, 1200)
-            elif key == "min_free_gb":
-                app.config[key] = _safe_int(val, 10, 0)
-            elif key == "preview_limit":
-                app.config[key] = _safe_int(val, 10, 0)
-            elif key == "default_sort":
-                app.config[key] = val if val in ("natural", "none") else "natural"
-            else:
-                app.config[key] = val
-        for key, v in btn_vars.items():
-            app.config[key] = bool(v.get())
-        from Manager import save_config
+        app.config[key] = _normalise(key, raw)
+        last_raw[key] = raw
         save_config(app.config)
-        app._update_button_states()
-        app._rebuild_buttons()
-        win.destroy()
+        _apply_side_effects(key)
 
-    for text, cmd in (("Cancel", win.destroy), ("Save", save)):
-        lbl = Label(sidebar, text=text, anchor='w', padx=12,
-                       bg=t["btn_bg"], fg=t["fg"], font=('', 8),
-                       cursor="hand2")
-        lbl.pack(fill='x', ipady=7, side='bottom')
-        lbl.bind("<Button-1>", lambda e, c=cmd: c())
-        lbl.bind("<Enter>", lambda e, l=lbl: l.configure(bg=t["hover"]))
-        lbl.bind("<Leave>", lambda e, l=lbl: l.configure(bg=t["btn_bg"]))
+    def _queue_setting(key, raw):
+        if key in ("preview_limit",):
+            if key in pending:
+                win.after_cancel(pending[key])
+            def commit(k=key, value=raw):
+                pending.pop(k, None)
+                _persist_setting(k, value)
+            pending[key] = win.after(350, commit)
+        else:
+            _persist_setting(key, raw)
+
+    for key, variable in vars_.items():
+        variable.trace_add("write", lambda *_, k=key, v=variable: _queue_setting(k, v.get()))
+    for key, variable in paths.items():
+        def apply_path(*_, k=key, v=variable):
+            value = v.get().strip()
+            if value and not Path(value).is_dir():
+                return
+            app.config[k] = value
+            save_config(app.config)
+            app._update_button_states()
+        variable.trace_add("write", apply_path)
+    for key, variable in btn_vars.items():
+        variable.trace_add("write", lambda *_, k=key, v=variable: _persist_setting(k, bool(v.get())))
+
+    def apply_themes(*_):
+        custom = _collect_themes()
+        if custom is None:
+            return
+        app.config["themes"] = custom
+        save_config(app.config)
+        app._apply_theme()
+    for keys in theme_vars.values():
+        for variable in keys.values():
+            variable.trace_add("write", apply_themes)
+
+    close_btn = Label(sidebar, text="Close", anchor='w', padx=12,
+                      bg=t["btn_bg"], fg=t["fg"], font=('', 8), cursor="hand2")
+    close_btn.pack(fill='x', ipady=7, side='bottom')
+    close_btn.bind("<Button-1>", lambda e: win.destroy())
+    close_btn.bind("<Enter>", lambda e: close_btn.configure(bg=t["hover"]))
+    close_btn.bind("<Leave>", lambda e: close_btn.configure(bg=t["btn_bg"]))
 
     show_tab("Paths")
