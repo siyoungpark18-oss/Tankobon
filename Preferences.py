@@ -36,6 +36,7 @@ PREF_TIPS = {
     "default_pdf_to_images_fmt":  "The default image format for images exported from a PDF.",
     "default_dedupe_mode":        "'Keep one copy' excludes all identical files except the original from the output.\n Delete all excludes all identical files from output, including its original.",
     "default_dedupe_hash":        "Exact (SHA-256) is fast and only matches files that are byte-for-byte identical, including metadata.\n Perceptual (pHash) matches images that look visually identical regardless of format or metadata, but is significantly slower.",
+    "phash_threshold":            "How close two perceptual hashes must be to count as duplicates. Lower values are stricter; higher values may group images that differ more.",
     "default_dpi":                "The Default DPI when converting a PDF to Images.\n A DPI higher than 72 or 96 is generally only useful for paper printing.",
     "hotkey_continue":            "The key you press to continue or confirm when a tool asks for input.",
     "hotkey_cancel":              "The key you press to cancel when a tool asks for input. Not all operations can be canceled consistently once they are running.",
@@ -313,6 +314,7 @@ def show_preferences(app):
         ("default_pdf_to_images_fmt",   "PDF to Images: Default Format", "combo", ["ask", "jpg", "png"]),
         ("default_dedupe_mode",         "Find Duplicates: Default Mode", "combo", ["ask", "keep one copy", "delete all"]),
         ("default_dedupe_hash",         "Find Duplicates: Hash Method",  "combo", ["exact", "perceptual"]),
+        ("phash_threshold",             "Find Duplicates: Similarity Threshold", "combo", ["0", "2", "4", "6", "8", "10", "12", "16"]),
         ("zip_extract_input",           "Unpack Zip Files in Input",     "check", None),
     ]
 
@@ -379,9 +381,9 @@ def show_preferences(app):
              bg=t["bg"], font=('', 10)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
 
     btn_vars = {}
-    for i, (key, section, label, _) in enumerate(app.TOGGLEABLE):
+    for i, (key, section, tool_id) in enumerate(app.TOGGLEABLE):
         v = tk.BooleanVar(value=bool(app.config.get(key, True)))
-        Label(p, text=f"{label}  ({section})", anchor='w', bg=t["bg"], font=('', 10)).grid(
+        Label(p, text=f"{app._tool_label(tool_id)}  ({section})", anchor='w', bg=t["bg"], font=('', 10)).grid(
             row=i + 2, column=0, sticky='w', pady=3)
         _check_btn(p, v).grid(row=i + 2, column=1, sticky='w')
         btn_vars[key] = v
@@ -491,6 +493,8 @@ def show_preferences(app):
             return _safe_int(raw, 10, 0)
         if key == "preview_limit":
             return _safe_int(raw, 10, 0)
+        if key == "phash_threshold":
+            return _safe_int(raw, 4, 0, 64)
         if key == "default_sort":
             return raw if raw in ("natural", "none") else "natural"
         return raw
