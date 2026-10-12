@@ -103,7 +103,7 @@ def build_app():
     print("Building with PyInstaller...")
     poppler_bin = str(POPPLER_SRC / "bin")
 
-    source_files = ["Manager.py", "ManagerConfig.py", "ToolRegistry.py", "Log.py", "Preferences.py", "Themes.py"]
+    source_files = ["Manager.py", "ManagerConfig.py", "ManagerOutput.py", "ToolNames.py", "ToolRegistry.py", "Log.py", "Preferences.py", "Themes.py"]
     add_data_args = []
     for f in source_files:
         add_data_args += ["--add-data", f"{f};."]
