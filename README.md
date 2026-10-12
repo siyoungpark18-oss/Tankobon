@@ -1,6 +1,6 @@
 # Tankobon. #
 
-Tankobon is a Free & Open source manga file manager. 
+Tankobon is a Free & Open source manga file manager. It is meant as a post-processor for after you've obtained the files and before you host them locally on servers like Kavita. However it does not preserve metadata yet unfortunately, but it will be updated. This README is a little outdated by now as well.
 
 *Its sole purpose of existence is to make manga piracy easier.*
 
