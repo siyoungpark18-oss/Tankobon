@@ -29,8 +29,12 @@ from Themes import THEMES
 
 
 TOOL_LABELS = {
-    "Folders to PDF", "Images to PDF", "Folders to EPUB", "Images to EPUB", "Folder Renamer", "File Renamer",
-    "Combine Image Sets", "Image Converter", "Find Duplicates",
+    "Folders to PDF", "Images to PDF", "Folders to EPUB", "Images to EPUB",
+    "ZIP Renamer", "CBZ Renamer", "Uncompressed Renamer",
+    "ZIP Combine Image Sets", "CBZ Combine Image Sets", "Uncompressed Combine Image Sets",
+    "ZIP Image Converter", "CBZ Image Converter", "Uncompressed Image Converter",
+    "ZIP Find Duplicates", "CBZ Find Duplicates", "Uncompressed Find Duplicates",
+    "Folder Renamer", "File Renamer", "Combine Image Sets", "Image Converter", "Find Duplicates",
     "PDF Combiner", "EPUB Combiner", "PDF Splitter", "EPUB Splitter",
     "PDF to Images", "EPUB to Images",
 }
@@ -881,16 +885,25 @@ class App:
     # ── button building ───────────────────────────────────────────────────────
 
     def _refresh_format_tool_names(self):
-        """Use the current production format in the document tool names."""
+        """Use the selected document and folder production formats in tool names."""
         fmt = self.current_doc_format
         fmt = fmt if fmt in ("pdf", "epub") else "pdf"
         self.current_doc_format = fmt
         title = fmt.upper()
+        folder_title = self.current_folder_format.upper() if self.current_folder_format != "uncompressed" else "Uncompressed"
+        folder_prefix = None if self.current_folder_format == "uncompressed" else folder_title
         aliases = {"Folders to PDF": f"Folders to {title}",
                    "Images to PDF": f"Images to {title}",
                    "PDF Combiner": f"{title} Combiner",
                    "PDF Splitter": f"{title} Splitter",
-                   "PDF to Images": f"{title} to Images"}
+                   "PDF to Images": f"{title} to Images",
+                   "Folder Renamer": f"{folder_prefix} Renamer" if folder_prefix else "Folder Renamer",
+                   "Combine Image Sets": f"{folder_prefix} Combine Image Sets" if folder_prefix else "Combine Image Sets",
+                   "Image Converter": f"{folder_prefix} Image Converter" if folder_prefix else "Image Converter",
+                   "Find Duplicates": f"{folder_prefix} Find Duplicates" if folder_prefix else "Find Duplicates"}
+        self.folder_tool_labels = {name: aliases[name] for name in
+                                   ("Folder Renamer", "Combine Image Sets", "Image Converter", "Find Duplicates")}
+        self.folder_renamer_label = self.folder_tool_labels["Folder Renamer"]
         cls = type(self)
         self.TOGGLEABLE = [(key, section, aliases.get(label, label), method)
                            for key, section, label, method in cls.TOGGLEABLE]
@@ -911,8 +924,16 @@ class App:
                 self.TOOLTIPS[new] = f"Combines PDF and image-based EPUB inputs into one {title}. PDFs are rendered to page images when EPUB is selected."
             elif old == "PDF Splitter":
                 self.TOOLTIPS[new] = f"Splits the selected PDF or image-based EPUB into {title} parts at the page ranges you enter."
-            else:
+            elif old == "PDF to Images":
                 self.TOOLTIPS[new] = "Exports page images from PDFs and image-based EPUBs. The tool name follows the selected file production format."
+            elif old == "Folder Renamer":
+                self.TOOLTIPS[new] = f"Renames folders and writes the results using the selected {folder_title} folder production format."
+            elif old == "Combine Image Sets":
+                self.TOOLTIPS[new] = f"Combines image folders into one set using the selected {folder_title} folder production format."
+            elif old == "Image Converter":
+                self.TOOLTIPS[new] = f"Converts images and writes the results using the selected {folder_title} folder production format."
+            else:
+                self.TOOLTIPS[new] = f"Finds duplicate images and writes the results using the selected {folder_title} folder production format."
 
     def _set_doc_format(self, fmt):
         if fmt not in ("pdf", "epub") or fmt == self.current_doc_format:
@@ -926,6 +947,8 @@ class App:
         if fmt not in ("cbz", "zip", "uncompressed") or fmt == self.current_folder_format:
             return
         self.current_folder_format = fmt
+        self._refresh_format_tool_names()
+        self._rebuild_buttons()
         self._update_format_selector()
 
     def _production_config(self):
@@ -1474,7 +1497,8 @@ class App:
 
     def run_folder_renamer(self):
         config = self._production_config()
-        self._run(lambda: folder_renamer(config, self.cancel_event), job_name="Folder Renamer")
+        self._run(lambda: folder_renamer(config, self.cancel_event),
+                  job_name=self.folder_renamer_label)
 
     def run_file_renamer(self):
         config = self._production_config()
@@ -1482,15 +1506,15 @@ class App:
 
     def run_combine(self):
         config = self._production_config()
-        self._run(lambda: combine_image_sets(config, self.cancel_event), job_name="Combine Image Sets")
+        self._run(lambda: combine_image_sets(config, self.cancel_event), job_name=self.folder_tool_labels["Combine Image Sets"])
 
     def run_converter(self):
         config = self._production_config()
-        self._run(lambda: image_converter(config, self.cancel_event), job_name="Image Converter")
+        self._run(lambda: image_converter(config, self.cancel_event), job_name=self.folder_tool_labels["Image Converter"])
 
     def run_duplicates(self):
         config = self._production_config()
-        self._run(lambda: find_duplicates(config, self.cancel_event), job_name="Find Duplicates")
+        self._run(lambda: find_duplicates(config, self.cancel_event), job_name=self.folder_tool_labels["Find Duplicates"])
 
     def run_pdf_splitter(self):
         config = self._production_config()
