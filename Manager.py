@@ -48,6 +48,9 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "default_img_fmt":           "ask",
     "default_pdf_to_images_fmt": "ask",
     "auto_clear_input":          False,
+    "confirm_clear_input":       False,
+    "confirm_clear_output":      True,
+    "ask_run_name":              True,
     "replace_output":            True,
     "sort_output":               False,
     "hotkey_continue":           "Return",
@@ -57,7 +60,6 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "dark_mode":                 False,
     "min_free_gb":               10,
     "log_default_expanded":      False,
-    "ask_run_name":              False,
     "show_timestamps":           True,
     "open_output_recent":        False,
     "first_launch":              True,
@@ -116,6 +118,13 @@ def load_config():
             data = None
     if data is None:
         return copy.deepcopy(DEFAULTS)
+    # Migrate the former shared confirmation setting when the new per-folder
+    # settings are absent. New installs default to output confirmation only.
+    legacy_confirm = data.get("confirm_clear")
+    if legacy_confirm is not None:
+        data.setdefault("confirm_clear_input", bool(legacy_confirm))
+        data.setdefault("confirm_clear_output", bool(legacy_confirm))
+    data.pop("confirm_clear", None)
     for k, v in DEFAULTS.items():
         data.setdefault(k, copy.deepcopy(v))
     return data
