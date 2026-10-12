@@ -64,8 +64,8 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "open_output_recent":        False,
     "first_launch":              True,
     "log_blank_lines":           False,
-    "log_font_size":             8,
-    "ui_font_size":              7,
+    "log_font_size":             11,
+    "ui_font_size":              10,
     "default_images_to_pdf_mode": "ask",
     "default_folders_to_pdf_mode": "ask",
     "default_folder_renamer_mode": "ask",
@@ -2684,7 +2684,7 @@ def status(config):
 
 def info():
     print("""
--- File & Folder Management --
+-- Tankobon --
 'folders to pdf'     'images to pdf'     'folder renamer'
 'file renamer'       'combine image sets' 'image converter'
 'find duplicates'    'pdf splitter'       'pdf combiner'
@@ -2703,7 +2703,7 @@ All output goes to output/
 # The area below allos the manager.py to run on its own
 def command_line():
     config = load_config()
-    print("\nFile & Folder Manager — type 'info' for commands")
+    print("\nTankobon — type 'info' for commands")
     while True:
         command = input(">>> ").strip().lower()
         try:
