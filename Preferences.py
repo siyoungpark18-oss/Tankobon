@@ -164,6 +164,8 @@ def show_preferences(app):
 
     Label(sidebar, text="Preferences", font=('', 8),
              bg=t["btn_bg"], fg=t["hint_fg"], pady=8).pack(fill='x')
+    Label(sidebar, text="Changes save immediately. Most\nsettings take effect on the\nnext operation.", font=('', 7),
+          bg=t["btn_bg"], fg=t["hint_fg"], padx=8, pady=4, justify='left').pack(fill='x')
 
     for name in pages:
         lbl = Label(sidebar, text=name, anchor='w', padx=12,
@@ -508,6 +510,8 @@ def show_preferences(app):
             app._update_format_selector()
         elif key == "zip_compression":
             app.current_folder_format = app.config[key]
+            app._refresh_format_tool_names()
+            app._rebuild_buttons()
             app._update_format_selector()
         elif key in ("show_tooltips", "ui_mode", "guide_empty_input"):
             app._rebuild_buttons()
