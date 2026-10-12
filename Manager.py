@@ -64,7 +64,6 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "open_output_recent":        False,
     "first_launch":              True,
     "log_blank_lines":           False,
-    "ui_mode":                   "dropdown",
     "log_font_size":             8,
     "ui_font_size":              7,
     "default_images_to_pdf_mode": "ask",
