@@ -16,7 +16,8 @@ PREF_TIPS = {
     "ui_mode":                    "Classic UI uses a combination of simple buttons and the keyboard to pick options.\n The Dropdown UI places options under a tool header.\n\n When tools are defaulted to a specific option, options are no longer prompted for either way.",
     "allow_concurrent_jobs":      "Run multiple different tools at the same time. With this, outputs can generate in quick succession.\n To prevent new outputs from replacing old ones, use the run name option and disable replace output.\n\n Generally leads to more errors and bugs and tends to spread computer resources thin.",
     "auto_clear_input":           "Automatically Empties the Input folder after an Operation is completed.",
-    "confirm_clear":              "Asks 'Are you sure?' before Clear Input / Clear Output deletes anything.\n Off by default: Input only holds copies of your files,\n but Output results are not backed up anywhere.",
+    "confirm_clear_input":        "Asks before deleting everything inside the Input folder. Input usually holds copies of your files.",
+    "confirm_clear_output":       "Asks before deleting everything inside the Output folder. Output results may not be backed up anywhere.",
     "ask_run_name":               "Prompts you to name each output. The results are then placed in a folder with that name inside the output folder.\n Leave the name blank, and results go straight into the main output folder.\n Does not name individual files.",
     "replace_output":             "When enabled, a new result replaces an older one with the same name. In your own run / operation folders that is the whole folder; in the main output folder it is each file, folder or archive with the same name.\n When disabled, the new result gets a number added to its name instead (Ch 1 (2).cbz).",
     "sort_output":                "Puts results in a subfolder named after each tool.\n If outputs are also named, they are named within the tool folder.\n With this and Run Name both off, results go straight into the main output folder.",
@@ -290,7 +291,8 @@ def show_preferences(app):
         ("log_blank_lines",       "Double Space in Log",            "check", None),
         ("allow_concurrent_jobs", "Concurrent Operations",          "check", None),
         ("auto_clear_input",      "Clear Input after Operation",    "check", None),
-        ("confirm_clear",         "Confirm before Clearing",        "check", None),
+        ("confirm_clear_input",   "Confirm before Clearing Input",  "check", None),
+        ("confirm_clear_output",  "Confirm before Clearing Output", "check", None),
         ("ask_run_name",          "Run Name",                       "check", None),
         ("replace_output",        "Replace Output",                 "check", None),
         ("sort_output",           "Sort Output by Operation",       "check", None),
@@ -343,7 +345,7 @@ def show_preferences(app):
                 row=row, column=0, sticky='w', pady=4, padx=(0, 16))
             _info_btn(page, row, key, PREF_TIPS)
             if typ == "check":
-                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats", "zip_extract_input", "keep_documents_unarchived") else False
+                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats", "zip_extract_input", "keep_documents_unarchived", "confirm_clear_output", "ask_run_name") else False
                 v = tk.BooleanVar(value=bool(app.config.get(key, default)))
                 _check_btn(page, v).grid(row=row, column=1, sticky='w')
             elif typ == "entry":
@@ -498,7 +500,7 @@ def show_preferences(app):
         app.config.update(new_paths)
         for key, v in vars_.items():
             val = v.get()
-            if key in ("auto_clear_input", "confirm_clear", "replace_output", "sort_output",
+            if key in ("auto_clear_input", "confirm_clear_input", "confirm_clear_output", "replace_output", "sort_output", "ask_run_name",
                        "guide_empty_input", "show_tooltips", "allow_concurrent_jobs",
                        "log_default_expanded", "show_timestamps", "open_output_recent", "log_blank_lines",
                        "show_folder_stats", "zip_extract_input", "keep_documents_unarchived"):
