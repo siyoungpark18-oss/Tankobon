@@ -17,7 +17,7 @@ from Manager import (
     folders_to_pdf, images_to_pdf, folder_renamer, file_renamer,
     combine_image_sets, image_converter, pdf_splitter, pdf_combiner,
     pdf_to_images, status, find_duplicates, DEFAULTS, SENTINEL, take_config_warning,
-    settle_runs, recover_stale_runs
+    settle_runs, recover_stale_runs, friendly_error
 )
 
 #IMPORT FROM LOG, PREFERENCES AND THEMES—————————————————————————————————————————————————————————————————
@@ -1267,7 +1267,7 @@ class App:
         log = sys.stdout
         if hasattr(log, "end_section"):
             log.end_section()                 # a crash can leave a section open, which would hide this message
-        print(f"  ✖ {job_name} stopped because of an error: {error}")
+        print(f"  ✖ {job_name} stopped because of an error: {friendly_error(error)}")
         if hasattr(log, "start_section"):
             log.start_section("  Error details (include this if you report a bug)")
             for line in traceback.format_exc().rstrip().splitlines():
@@ -1313,7 +1313,7 @@ class App:
                     item.unlink()
                 removed += 1
             except Exception as e:
-                print(f"Failed to delete {item.name}: {e}")
+                print(f"Failed to delete {item.name}: {friendly_error(e)}")
                 failed += 1
         print(f"{label} cleared." + (f" ({failed} item(s) could not be deleted)" if failed else ""))
 
@@ -1456,7 +1456,7 @@ class App:
                     shutil.copy2(str(src), str(dest))
                 ok += 1
             except Exception as e:
-                print(f"  Failed: {src.name}: {e}")
+                print(f"  Failed: {src.name}: {friendly_error(e)}")
                 fail += 1
         print(f"  Done! {ok} added{f', {fail} failed' if fail else ''} → {input_dir}")
 
