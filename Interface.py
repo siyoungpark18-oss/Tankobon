@@ -977,45 +977,12 @@ class App:
         for w in self._btn_frame.winfo_children():
             w.destroy()
 
-        if self.config.get("ui_mode", "dropdown") == "dropdown":
-            self._build_dropdown_buttons()
-        else:
-            self._build_classic_buttons()
+        self._build_dropdown_buttons()
 
         self._apply_theme()
         self._update_format_selector()
         self._update_button_states()
         self.root.after_idle(self._ensure_size)
-
-    def _build_classic_buttons(self):
-        from collections import OrderedDict
-        toggleable_sections = OrderedDict()
-        for key, section, label, method in self.TOGGLEABLE:
-            if self.config.get(key, True):
-                toggleable_sections.setdefault(section, []).append(
-                    (label, getattr(self, method)))
-
-        fixed_sections = [
-            ("Input", [
-                ("Add Input",   self.pick_files),
-                ("Clear Input", self.clear_input),
-                ("Open Input",  self.open_input),
-            ]),
-            ("Utility", [
-                ("Status",       self.run_status),
-                ("Clear Log",    self.clear_log),
-                ("Open Output",  self.open_output),
-                ("Clear Output", self.clear_output),
-                ("Cancel Operation",   self.cancel_job),
-            ]),
-        ]
-
-        for section_label, cmds in list(toggleable_sections.items()) + fixed_sections:
-            tk.Label(self._btn_frame, text=section_label,
-                     font=self._uf(bold=True)).pack(anchor='w', pady=(8, 2))
-            for label, cmd in cmds:
-                self._make_button(self._btn_frame, label, cmd,
-                                  tooltip=self.TOOLTIPS.get(label))
 
     def _build_dropdown_buttons(self):
         t = self._theme()
