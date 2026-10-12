@@ -1325,7 +1325,8 @@ class App:
         if not folder.exists() or not any(folder.iterdir()):
             print(f"{label} folder is already empty.")
             return
-        if self.config.get("confirm_clear", False):
+        confirm_key = "confirm_clear_output" if label == "Output" else "confirm_clear_input"
+        if self.config.get(confirm_key, label == "Output"):
             if not messagebox.askyesno(
                     f"Clear {label}",
                     f"Delete everything inside this folder?\n\n{folder}\n\nThis cannot be undone.",
