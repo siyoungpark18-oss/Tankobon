@@ -148,6 +148,42 @@ _RUNS = {}                      # staging folder -> {"root", "operation", "threa
 _RUNS_LOCK = threading.Lock()
 
 
+def _validate_run_name(run_name):
+    """Reject names that could escape the output directory on any supported platform."""
+    name = str(run_name).strip()
+    if (name in (".", "..") or Path(name).is_absolute()
+            or any(sep in name for sep in ("/", "\\", ":"))
+            or any(ord(char) < 32 for char in name)):
+        raise ValueError("Run names must be a single folder name without path separators.")
+    return name
+
+
+def _unique_output_path(path, reserved=None, directory=False):
+    """Return a non-colliding output path, adding ' (2)', ' (3)', etc. as needed."""
+    reserved = reserved if reserved is not None else set()
+    path = Path(path)
+
+    def key(candidate):
+        return os.path.normcase(os.path.abspath(str(candidate))).casefold()
+
+    original_name = path.name
+    suffix = "" if directory else path.suffix
+    stem = original_name if directory else path.name[:-len(suffix)] if suffix else path.name
+    candidate = path
+    number = 2
+    while candidate.exists() or key(candidate) in reserved:
+        candidate = path.with_name(f"{stem} ({number}){suffix}")
+        number += 1
+    reserved.add(key(candidate))
+    return candidate
+
+
+def _unique_output_stem(parent, name, extension, reserved=None):
+    """Choose a unique stem while accounting for save_book's appended extension."""
+    target = _unique_output_path(Path(parent) / f"{name}{extension}", reserved)
+    return target.with_name(target.name[:-len(extension)]) if extension else target
+
+
 def get_output(config, operation, run_name):
     """Where a tool writes its results.
     - Sort Output by Operation and/or a run name: a folder of its own (output/[operation/][run name]).
@@ -155,6 +191,8 @@ def get_output(config, operation, run_name):
       folder inside it first, and _finalize_output() moves the results out (packing them if wanted). That keeps
       this run's results apart from earlier ones, so they can be packed (and replaced) safely."""
     root = Path(config["output"]) / "output"
+    if run_name:
+        run_name = _validate_run_name(run_name)
     if not (config.get("sort_output", False) or run_name):
         root.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=root))
@@ -240,14 +278,15 @@ def throttle_if_needed(config, cancel=None):
 
 
 def natural_sort_key(name):
-    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', name)]
+    return [int(chunk) if chunk.isdecimal() else chunk.lower()
+            for chunk in re.split(r'(\d+)', str(name))]
 
 
 def _check_disk_space(path, config=None):
     try:
         usage = shutil.disk_usage(path)
         free_gb = usage.free / (1024 ** 3)
-        min_gb = _int_cfg(config, "min_free_gb", 2) if config else 2
+        min_gb = _int_cfg(config, "min_free_gb", 10) if config else 10
         if free_gb < min_gb:
             print(f"  ✖ Not enough disk space: {free_gb:.1f} GB free (minimum: {min_gb} GB).")
             print(f"    Free up space or lower the minimum in Preferences (≡).")
@@ -288,6 +327,19 @@ def collect_image_paths(folder, image_extensions, sub_print=None, use_sort=True)
             skipped.extend(sub_skipped)
             if sub_paths and sub_print:
                 sub_print(f"    {item.name}/  →  {len(sub_paths)} image(s)")
+    return paths, skipped
+
+
+def collect_direct_image_paths(folder, image_extensions, use_sort=True):
+    """Collect supported files directly inside a folder without descending into child folders."""
+    items = sorted(folder.iterdir(), key=lambda x: natural_sort_key(x.name)) if use_sort else list(folder.iterdir())
+    paths, skipped = [], []
+    for item in items:
+        if item.is_file():
+            if item.suffix.lower() in image_extensions:
+                paths.append(item)
+            else:
+                skipped.append((item, "unsupported type"))
     return paths, skipped
 
 
@@ -377,8 +429,8 @@ class _BuildCancelled(Exception):
 
 
 def _doc_format(config):
-    fmt = config.get("default_doc_format", "pdf")
-    return fmt if fmt in ("pdf", "epub") else "pdf"
+    fmt = config.get("default_doc_format", "epub")
+    return fmt if fmt in ("pdf", "epub") else "epub"
 
 
 def _doc_name(config):
@@ -572,10 +624,16 @@ def _get_run_name(config, prompt="Run name (Enter to skip): "):
     """Returns the run name, "" when the person didn't name the run, or None if they cancelled."""
     if not config.get("ask_run_name", False):
         return ""
-    val = input(prompt).strip()
-    if val == SENTINEL:
-        return None
-    return val
+    while True:
+        val = input(prompt).strip()
+        if val == SENTINEL:
+            return None
+        if not val:
+            return ""
+        try:
+            return _validate_run_name(val)
+        except ValueError:
+            print("  Run names must be a single folder name. Avoid '/', '\\', and ':'; don't use '.' or '..' alone.")
 
 
 def _cancel():
@@ -771,7 +829,7 @@ def _group_by_top_folder(files, src):
     return [(label, fl, src if label == ROOT_LABEL else src / label) for label, fl in groups.items()]
 
 
-def _log_scan(config, files, src, noun="image", numbering=None, details=None):
+def _log_scan(config, files, src, noun="image", numbering=None, details=None, unlimited=False):
     """Show every folder the tool is working with, using the shared format.
     numbering = {path: number} prints '12. name' and lists everything (needed to pick files by number).
     details   = {path: text}   appends '  —  text' to a file's line."""
@@ -785,7 +843,8 @@ def _log_scan(config, files, src, noun="image", numbering=None, details=None):
             numbers = [numbering[f] for f in fl]
             if numbers == list(range(numbers[0], numbers[0] + len(numbers))):   # consecutive: show the range
                 extra = f"  ·  #{numbers[0]}–#{numbers[-1]}"
-        _log_group(config, label, fl, base, noun=noun, names=names, numbers=numbers, extra=extra)
+        _log_group(config, label, fl, base, noun=noun, names=names, numbers=numbers,
+                   extra=extra, unlimited=unlimited)
     if len(groups) > 1:
         print(f"  Total: {len(files)} {noun}(s) in {len(groups)} folder(s){_size_suffix(config, files)}")
 
@@ -895,7 +954,7 @@ def _extract_archive(config, archive, cancel=None):
             if any(i.flag_bits & 0x1 for i, _ in files):
                 raise RuntimeError("the zip file is password-protected")
             need = sum(i.file_size for i, _ in files)
-            reserve = _int_cfg(config, "min_free_gb", 2) * (1024 ** 3)
+            reserve = _int_cfg(config, "min_free_gb", 10) * (1024 ** 3)
             free = shutil.disk_usage(parent).free
             if need + reserve > free:
                 raise OSError(errno.ENOSPC,
@@ -1299,6 +1358,7 @@ def folders_to_pdf(config, cancel=None):
     else:
         total_converted = 0
         total_skipped = []
+        used_book_paths = set()
         for folder in folders:
             if cancel and cancel.is_set():
                 print(f"  Cancelled. ({total_converted} {_doc_name(config)}s saved so far)")
@@ -1309,13 +1369,27 @@ def folders_to_pdf(config, cancel=None):
                 [f for f in folder.iterdir() if f.is_dir()],
                 key=lambda x: natural_sort_key(x.name)
             ) if use_sort else [f for f in folder.iterdir() if f.is_dir()]
-            units = subfolders if subfolders else [folder]
+            units = list(subfolders) if subfolders else [folder]
+            if subfolders:
+                loose_images, loose_skipped = collect_direct_image_paths(
+                    folder, IMAGE_EXTENSIONS, use_sort=use_sort)
+                if loose_images or loose_skipped:
+                    units.append(folder)
             unit_data = []
             for unit in units:
-                paths, skipped = collect_image_paths(unit, IMAGE_EXTENSIONS, use_sort=use_sort)
+                if unit is folder and subfolders:
+                    paths, skipped = collect_direct_image_paths(
+                        unit, IMAGE_EXTENSIONS, use_sort=use_sort)
+                else:
+                    paths, skipped = collect_image_paths(unit, IMAGE_EXTENSIONS, use_sort=use_sort)
                 total_skipped.extend(skipped)
-                safe_name = re.sub(r'[^\w\s\-.]', '', unit.name).strip() or unit.name
-                label = unit.name if unit is folder else f"{folder.name} / {unit.name}"
+                raw_name = f"{folder.name} (loose images)" if unit is folder and subfolders else unit.name
+                safe_name = re.sub(r'[^\w\s\-.]', '', raw_name).strip() or raw_name
+                if paths:
+                    safe_name = _unique_output_stem(
+                        out, safe_name, f".{_doc_format(config)}", used_book_paths).name
+                label = "Loose images" if unit is folder and subfolders else (
+                    unit.name if unit is folder else f"{folder.name} / {unit.name}")
                 extra = (f"  ·  {len(skipped)} skipped" if skipped else "") + \
                         (f"  →  {safe_name}.{_doc_format(config)}" if paths else "")
                 _log_group(config, label, paths, unit, extra=extra)
@@ -1403,7 +1477,7 @@ def images_to_pdf(config, cancel=None):
         # (e.g. #26–#29) so you can still tell which number is which file when names are hidden.
         numbering = {f: n for n, f in enumerate(image_files, 1)}
         print("  Expand a folder to see which number is which file. Numbers run in order; each folder's range is in its header.")
-        _log_scan(config, image_files, src, numbering=numbering)
+        _log_scan(config, image_files, src, numbering=numbering, unlimited=True)
         print(f"  Enter file numbers (1–{len(image_files)}) separated by commas.")
         print(f"  Leave blank to use all files in default order.")
         raw = input("Order: ").strip()
@@ -1487,7 +1561,7 @@ def folder_renamer(config, cancel=None):
     run_name = _get_run_name(config)
     if run_name is None:
         return _cancel()
-    out = get_output(config, f"{format_title.lower()} renamer", run_name)
+    out = get_output(config, _folder_tool_name(config, "Folder Renamer").lower(), run_name)
     print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
         return
@@ -1625,7 +1699,7 @@ def file_renamer(config, cancel=None):
     use_sort = resolve_sort(config)
     print(f"  Sort: {'natural' if use_sort else 'none'}")
     if use_sort:
-        items = sorted(items, key=lambda x: natural_sort_key(x.name))
+        items = sorted(items, key=lambda x: natural_sort_key(str(x.relative_to(src))))
 
     if not items:
         print("  No files found in Input!")
@@ -1787,10 +1861,20 @@ def combine_image_sets(config, cancel=None):
         throttle_if_needed(config, cancel)
         subfolders = sorted([f for f in folder.iterdir() if f.is_dir()],
                             key=lambda x: natural_sort_key(x.name)) if use_sort else [f for f in folder.iterdir() if f.is_dir()]
-        targets = [(sub.name, sub) for sub in subfolders] if subfolders else [(folder.name, folder)]
+        targets = [(sub.name, sub, False) for sub in subfolders] if subfolders else [
+            (folder.name, folder, False)]
+        if subfolders:
+            loose_images, loose_skipped = collect_direct_image_paths(
+                folder, IMAGE_EXTENSIONS, use_sort=use_sort)
+            if loose_images or loose_skipped:
+                targets.append(("Loose images", folder, True))
 
-        for label, target in targets:
-            images, skipped = collect_images(target)
+        for label, target, direct_only in targets:
+            if direct_only:
+                images, skipped = collect_direct_image_paths(
+                    target, IMAGE_EXTENSIONS, use_sort=use_sort)
+            else:
+                images, skipped = collect_images(target)
             total_skipped.extend(skipped)
 
             # Show this set (count, size, and each image with the number it will get) BEFORE copying it.
@@ -1873,7 +1957,7 @@ def image_converter(config, cancel=None):
     use_sort = resolve_sort(config)
     print(f"  Sort: {'natural' if use_sort else 'none'}")
     if use_sort:
-        images = sorted(images, key=lambda x: natural_sort_key(x.name))
+        images = sorted(images, key=lambda x: natural_sort_key(str(x.relative_to(src))))
 
     if not images:
         print("  No images found in Input!")
@@ -1899,7 +1983,7 @@ def image_converter(config, cancel=None):
         throttle_if_needed(config, cancel)
         dest_dir = out / img_path.relative_to(src).parent
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / (img_path.stem + ext)
+        dest = _unique_output_path(dest_dir / (img_path.stem + ext))
         src_ext = img_path.suffix.lower()
         already_correct = src_ext == ext or (ext == ".jpg" and src_ext == ".jpeg")
         if already_correct:
@@ -1975,7 +2059,7 @@ def find_duplicates(config, cancel=None):
     use_sort = resolve_sort(config)
     print(f"  Sort: {'natural' if use_sort else 'none'}")
     if use_sort:
-        all_files = sorted(all_files, key=lambda x: natural_sort_key(x.name))
+        all_files = sorted(all_files, key=lambda x: natural_sort_key(str(x.relative_to(src))))
 
     if not all_files:
         print("  No images found in Input!")
@@ -2143,7 +2227,7 @@ def pdf_combiner(config, cancel=None):
             skipped.append((f, "not a PDF or EPUB"))
 
     if use_sort:
-        pdfs = sorted(pdfs, key=lambda x: natural_sort_key(x.name))
+        pdfs = sorted(pdfs, key=lambda x: natural_sort_key(str(x.relative_to(src))))
 
     if not pdfs:
         print("  No PDFs or EPUBs found in Input!")
@@ -2273,7 +2357,6 @@ def pdf_to_images(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
 
-    print("PDF to Images")
     print(f"{_doc_name(config)} to Images")
     print(f"  Input:  {src}")
     if not extract_archives(config, src, cancel):
@@ -2309,7 +2392,6 @@ def pdf_to_images(config, cancel=None):
         dpi = 72
     print(f"  DPI: {dpi}")
 
-    out = get_output(config, "pdf to images", run_name)
     out = get_output(config, f"{_doc_format(config)} to images", run_name)
     print(f"  Output: {_shown(out)}")
     if not _check_disk_space(out, config):
@@ -2335,7 +2417,7 @@ def pdf_to_images(config, cancel=None):
     use_sort = resolve_sort(config)
     print(f"  Sort: {'natural' if use_sort else 'none'}")
     if use_sort:
-        pdfs = sorted(pdfs, key=lambda x: natural_sort_key(x.name))
+        pdfs = sorted(pdfs, key=lambda x: natural_sort_key(str(x.relative_to(src))))
 
     if not pdfs:
         print("  No PDFs or EPUBs found in Input!")
@@ -2346,6 +2428,7 @@ def pdf_to_images(config, cancel=None):
 
     total_page_count = 0
     page_counts = {}
+    used_pdf_dirs = set()
     for pdf_path in pdfs:
         try:
             if pdf_path.suffix.lower() == ".epub":
@@ -2373,7 +2456,7 @@ def pdf_to_images(config, cancel=None):
             print(f"  Cancelled. ({total_pages} pages exported so far)")
             print("")
             return
-        pdf_out = out / pdf_path.stem
+        pdf_out = _unique_output_path(out / pdf_path.stem, used_pdf_dirs, directory=True)
         pdf_out.mkdir(exist_ok=True)
         if pdf_path.suffix.lower() == ".epub":
             print(f"  Extracting: {pdf_path.name}...")
@@ -2461,7 +2544,7 @@ def pdf_splitter(config, cancel=None):
     print(f"  Sort: {'natural' if use_sort else 'none'}")
     pdfs = sorted(
         [f for f in src.rglob("*") if f.is_file() and f.suffix.lower() in DOCUMENT_EXTENSIONS],
-        key=lambda x: natural_sort_key(x.name)
+        key=lambda x: natural_sort_key(str(x.relative_to(src)))
     ) if use_sort else [f for f in src.rglob("*") if f.is_file() and f.suffix.lower() in DOCUMENT_EXTENSIONS]
 
     if not pdfs:
