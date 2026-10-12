@@ -11,7 +11,6 @@ import psutil
 import errno
 import zipfile
 import tempfile
-import threading
 import io
 import uuid
 import posixpath
@@ -21,11 +20,12 @@ from urllib.parse import unquote
 from xml.sax.saxutils import escape as _xml_escape
 from pypdf import PdfReader, PdfWriter
 import sys as _sys
-from ManagerConfig import (
-    DEFAULTS, CONFIG_PATH, STAGING_PREFIX, _RUNS, _RUNS_LOCK,
-    take_config_warning, load_config, save_config, get_input,
-    _validate_run_name, _unique_output_path, _unique_output_stem,
-    get_output, do_auto_clear, resolve_sort,
+from Log import (natural_sort_key, _fmt_size, _total_size, _size_suffix, _rel, _Section, _log_group, _log_scan, _get_log_section_fns, _int_cfg)
+from ToolNames import document_name, folder_tool_name
+from ManagerConfig import get_input, resolve_sort
+from ManagerOutput import (
+    get_output, finalize_output as _finalize_output, shown as _shown, settle_runs,
+    recover_stale_runs, unique_path, unique_output_stem, configure_output_support, validate_run_name,
 )
 
 def _get_poppler_path():
@@ -78,10 +78,6 @@ def throttle_if_needed(config, cancel=None):
         print(f"  Resuming...")
 
 
-def natural_sort_key(name):
-    return [int(chunk) if chunk.isdecimal() else chunk.lower()
-            for chunk in re.split(r'(\d+)', str(name))]
-
 
 def _check_disk_space(path, config=None):
     try:
@@ -112,7 +108,7 @@ def _is_no_space(e):
     return False
 
 
-def collect_image_paths(folder, image_extensions, sub_print=None, use_sort=True):
+def collect_image_paths(folder, image_extensions, use_sort=True):
     paths = []
     skipped = []
     items = sorted(folder.iterdir(), key=lambda x: natural_sort_key(x.name)) if use_sort else list(folder.iterdir())
@@ -123,11 +119,9 @@ def collect_image_paths(folder, image_extensions, sub_print=None, use_sort=True)
             else:
                 skipped.append((item, "unsupported type"))
         elif item.is_dir():
-            sub_paths, sub_skipped = collect_image_paths(item, image_extensions, sub_print, use_sort)
+            sub_paths, sub_skipped = collect_image_paths(item, image_extensions, use_sort)
             paths.extend(sub_paths)
             skipped.extend(sub_skipped)
-            if sub_paths and sub_print:
-                sub_print(f"    {item.name}/  →  {len(sub_paths)} image(s)")
     return paths, skipped
 
 
@@ -166,7 +160,7 @@ def save_pdf(image_paths, output_path):
                 with Image.open(p) as source:
                     imgs.append(source.convert("RGB"))
             if imgs:
-                imgs[0].save(partial, save_all=True, append_images=imgs[1:])
+                imgs[0].save(partial, format="PDF", save_all=True, append_images=imgs[1:])
         os.replace(partial, output_path)
     except Exception:
         partial.unlink(missing_ok=True)
@@ -256,7 +250,7 @@ def _doc_format(config):
 
 
 def _doc_name(config):
-    return _doc_format(config).upper()
+    return document_name(config)
 
 
 def _local(tag):
@@ -453,7 +447,7 @@ def _get_run_name(config, prompt="Run name (Enter to skip): "):
         if not val:
             return ""
         try:
-            return _validate_run_name(val)
+            return validate_run_name(val)
         except ValueError:
             print("  Run names must be a single folder name. Avoid '/', '\\', and ':'; don't use '.' or '..' alone.")
 
@@ -463,8 +457,37 @@ def _cancel():
     print("")
 
 
-def _warn_name_collisions(config, preview):
-    """Report unsafe rename destinations and return True if copying must stop."""
+def _validate_rename_preview(out, preview, src, folders=False):
+    """Reject rename values that introduce path components or unsafe file-name characters."""
+    root = Path(out).resolve()
+    source = Path(src).resolve()
+    for old, new in preview:
+        try:
+            relative = Path(new).resolve(strict=False).relative_to(root)
+        except ValueError:
+            print("  ✖ Rename stopped because a name points outside the output folder.")
+            print("    Remove path separators and try again.")
+            return False
+        parts = relative.parts
+        expected_parent = () if folders else Path(old).relative_to(source).parent.parts
+        if (len(parts) != len(expected_parent) + 1 or parts[:-1] != expected_parent
+                or any(part in ("", ".", "..") or any(ch in part for ch in ("/", "\\", ":"))
+                       or any(ord(ch) < 32 for ch in part) for part in parts)):
+            print("  ✖ Rename stopped because names must be single safe file or folder names.")
+            print("    Remove '/', '\\', ':', or control characters, then try again.")
+            return False
+    return True
+
+
+def _validate_rename_text(value):
+    if any(ch in value for ch in ("/", "\\", ":")) or any(ord(ch) < 32 for ch in value):
+        print("  ✖ Rename stopped because names cannot contain '/', '\\', ':', or control characters.")
+        return False
+    return True
+
+
+def _has_name_conflicts(config, preview):
+    """Return True when destinations collide with each other or already exist."""
     users = {}
     existing = []
     for old, new in preview:
@@ -521,163 +544,6 @@ def _print_summary(config, copied=0, failed=None, skipped=None, label="processed
                 s.add(f"    {p.name}: {reason}")
 
 
-def _get_log_section_fns():
-    import sys as _sys
-    log = _sys.stdout
-    if hasattr(log, 'start_section') and hasattr(log, 'end_section'):
-        return log.start_section, log.end_section
-    return lambda header: None, lambda: None
-
-
-# ══ LOG EXPANSION FRAMEWORK ═══════════════════════════════════════════════════
-# Every tool describes what it is working on the same way:
-#   [Folder]  12 image(s)  ·  34.5 MB          <- always visible (the ▶ header)
-#       page01.jpg                              <- shown when expanded, at most
-#       page02.jpg                                 "preview_limit" lines, then
-#       … and 40 more                              "… and N more"
-# and a tool's own preview ("Preview", "Excluding", "Pages per PDF", ...) uses the same
-# limited list. Both are controlled from Preferences.
-
-DEFAULT_PREVIEW_LIMIT = 10
-ROOT_LABEL = "(Input root)"          # label for files that sit directly in Input, not in a folder
-
-
-def _int_cfg(config, key, default):
-    """Read a whole number from the config. Anything unusable (text, blank, a hand-edited file) gives `default`."""
-    try:
-        return int(str(config.get(key, default)).strip())
-    except (TypeError, ValueError):
-        return default
-
-
-def get_preview_limit(config):
-    """How many lines a Log expansion may show. 0 means unlimited. Bad values fall back to 10."""
-    n = _int_cfg(config, "preview_limit", DEFAULT_PREVIEW_LIMIT)
-    return n if n >= 0 else DEFAULT_PREVIEW_LIMIT
-
-
-def _fmt_size(num_bytes):
-    size = float(num_bytes)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-
-
-def _total_size(files):
-    total = 0
-    for f in files:
-        try:
-            total += f.stat().st_size
-        except OSError:
-            pass
-    return total
-
-
-def _size_suffix(config, files):
-    """'  ·  34.5 MB', or '' when folder stats are switched off in Preferences."""
-    if not config.get("show_folder_stats", True):
-        return ""
-    return f"  ·  {_fmt_size(_total_size(files))}"
-
-
-def _stats_text(config, files, noun):
-    if not config.get("show_folder_stats", True):
-        return ""
-    return f"  {len(files)} {noun}(s){_size_suffix(config, files)}"
-
-
-def _rel(path, base):
-    try:
-        return str(path.relative_to(base))
-    except (ValueError, TypeError):
-        return path.name
-
-
-class _Section:
-    """A collapsible Log section that lists at most `preview_limit` lines, then '… and N more'.
-
-        with _Section(config, "  Preview (120)") as s:
-            for ... : s.add("    a  →  b")
-
-    Do NOT print anything else while one is open: it would be hidden inside the section.
-    Outside the GUI (plain console) the header is simply printed as a normal line."""
-
-    def __init__(self, config, header, unlimited=False):
-        self.limit = 0 if unlimited else get_preview_limit(config)
-        self.shown = 0
-        self.extra = 0
-        start, self._end = _get_log_section_fns()
-        if not hasattr(_sys.stdout, "start_section"):
-            print(header)
-        start(header)
-
-    def add(self, line, preview_path=None):
-        if self.limit and self.shown >= self.limit:
-            self.extra += 1
-            return
-        self.shown += 1
-        log = _sys.stdout
-        if preview_path is not None and hasattr(log, "write_with_preview"):
-            log.write_with_preview(line, preview_path)
-        else:
-            print(line)
-
-    def close(self):
-        if self.extra:
-            print(f"    … and {self.extra} more  (list size is set in Preferences)")
-        self._end()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
-
-
-def _log_group(config, label, files, base=None, noun="image", extra="", names=None,
-               numbers=None, unlimited=False):
-    """One folder in the Log: a header with the count and size, and the file names when expanded.
-    A group with nothing to list is a plain line, so there is never an expander that opens onto nothing."""
-    header = f"  [{label}]{_stats_text(config, files, noun)}{extra}"
-    lines = names if names is not None else [_rel(f, base) if base else f.name for f in files]
-    if not lines:
-        print(header)
-        return
-    with _Section(config, header, unlimited) as s:
-        for i, line in enumerate(lines):
-            s.add(f"    {numbers[i]}. {line}" if numbers else f"    {line}")
-
-
-def _group_by_top_folder(files, src):
-    """[(label, files, base_folder), ...] using the first folder level under Input."""
-    groups = {}
-    for f in files:
-        parts = f.relative_to(src).parts
-        groups.setdefault(parts[0] if len(parts) > 1 else ROOT_LABEL, []).append(f)
-    return [(label, fl, src if label == ROOT_LABEL else src / label) for label, fl in groups.items()]
-
-
-def _log_scan(config, files, src, noun="image", numbering=None, details=None, unlimited=False):
-    """Show every folder the tool is working with, using the shared format.
-    numbering = {path: number} prints '12. name' and lists everything (needed to pick files by number).
-    details   = {path: text}   appends '  —  text' to a file's line."""
-    if numbering is None and resolve_sort(config):          # keep the display in natural order (numbered lists keep their numbers)
-        files = sorted(files, key=lambda x: natural_sort_key(_rel(x, src)))
-    groups = _group_by_top_folder(files, src)
-    for label, fl, base in groups:
-        names = [_rel(f, base) + (f"  —  {details[f]}" if details and f in details else "") for f in fl]
-        numbers, extra = None, ""
-        if numbering:
-            numbers = [numbering[f] for f in fl]
-            if numbers == list(range(numbers[0], numbers[0] + len(numbers))):   # consecutive: show the range
-                extra = f"  ·  #{numbers[0]}–#{numbers[-1]}"
-        _log_group(config, label, fl, base, noun=noun, names=names, numbers=numbers,
-                   extra=extra, unlimited=unlimited)
-    if len(groups) > 1:
-        print(f"  Total: {len(files)} {noun}(s) in {len(groups)} folder(s){_size_suffix(config, files)}")
-
 
 def _get_working_folders(src, use_sort=True):
     top = sorted([f for f in src.iterdir() if f.is_dir()],
@@ -731,16 +597,6 @@ def _member_name(info):
             pass
     return name
 
-
-def _unique_path(path):
-    if not path.exists():
-        return path
-    n = 2
-    while True:
-        candidate = path.with_name(f"{path.name} ({n})")
-        if not candidate.exists():
-            return candidate
-        n += 1
 
 
 def _plan_members(zf, dest):
@@ -800,7 +656,7 @@ def _extract_archive(config, archive, cancel=None):
                     shutil.copyfileobj(s, d)
         kids = list(staging.iterdir())
         source = kids[0] if len(kids) == 1 and kids[0].is_dir() else staging
-        final = _unique_path(parent / archive.stem)
+        final = unique_path(parent / archive.stem, directory=True)
         shutil.move(str(source), str(final))
         return final, len(files), need, unsafe
     finally:
@@ -864,246 +720,6 @@ def extract_archives(config, src, cancel=None):
         _print_summary(config, copied=len(rows), failed=failed or None, label="extracted")
     return True
 
-
-def _archive_mode(config):
-    """'zip', 'cbz', or None when results should stay as loose files and folders."""
-    mode = config.get("zip_compression", "cbz")
-    return mode if mode in ("zip", "cbz") else None
-
-
-def _remove_path(path):
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
-
-
-def _free_name(dest_dir, name, replace, is_dir=False):
-    """Where a result called `name` goes inside dest_dir.
-    With Replace Output an existing item of that name is removed (so the new one replaces it);
-    otherwise the first free 'name (2)', 'name (3)', ... is used."""
-    target = dest_dir / name
-    if not (target.exists() or target.is_symlink()):
-        return target
-    if replace:
-        _remove_path(target)
-        return target
-    stem, suffix = (name, "") if is_dir else (Path(name).stem, Path(name).suffix)
-    n = 2
-    while (dest_dir / f"{stem} ({n}){suffix}").exists():
-        n += 1
-    return dest_dir / f"{stem} ({n}){suffix}"
-
-
-def _write_archive(config, files, base, dest_dir, stem, mode, cancel, replace, notes):
-    """Packs `files` (paths inside `base`) into dest_dir/<stem>.cbz (or .zip). Entries are stored relative to
-    `base`, so the images sit at the top of the archive. The archive is built under a temporary name, checked,
-    and only then given its final name, so a crash can never leave a broken archive behind.
-    Returns ("ok", final_path, size) | ("cancelled",) | ("failed", reason). Never deletes the source files."""
-    files = sorted(files, key=lambda x: natural_sort_key(_rel(x, base)))
-    ext = ".zip"
-    if mode == "cbz":
-        others = sorted({f.suffix.lower() or "(no extension)" for f in files
-                         if f.suffix.lower() not in CBZ_IMAGE_EXTENSIONS})
-        if others:
-            notes.append(f"  ⚠ {stem}: contains {', '.join(others)}, which a CBZ can't hold. Saved as .zip instead.")
-        else:
-            ext = ".cbz"
-    try:
-        if _total_size(files) > shutil.disk_usage(dest_dir).free:
-            return ("failed", "not enough free disk space")
-    except OSError:
-        pass
-
-    partial = dest_dir / f".tankobon_{threading.get_ident()}.partial"
-    cancelled = False
-    try:
-        with zipfile.ZipFile(partial, "w", allowZip64=True, strict_timestamps=False) as zf:
-            for f in files:
-                if cancel is not None and cancel.is_set():
-                    cancelled = True
-                    break
-                throttle_if_needed(config, cancel)
-                method = zipfile.ZIP_STORED if f.suffix.lower() in _ALREADY_COMPRESSED else zipfile.ZIP_DEFLATED
-                zf.write(f, _rel(f, base).replace(os.sep, "/"), compress_type=method)
-        if cancelled:
-            partial.unlink(missing_ok=True)
-            return ("cancelled",)
-        with zipfile.ZipFile(partial) as zf:
-            bad = zf.testzip()
-        if bad:
-            raise RuntimeError(f"zip check failed on '{bad}'")
-        final = _free_name(dest_dir, f"{stem}{ext}", replace)
-        os.replace(partial, final)
-        return ("ok", final, final.stat().st_size)
-    except Exception as e:
-        try:
-            partial.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return ("failed", "disk full" if _is_no_space(e) else str(e))
-
-
-def _place_results(config, src, dest, loose_name, cancel=None):
-    """Moves the results found in `src` into `dest` and, if the folder production format requests it, packs them:
-      - PDFs and EPUBs in result folders are moved into `dest` when the preference is enabled,
-      - every remaining top-level FOLDER becomes its own archive (chapter by chapter / volume by volume),
-      - loose IMAGES at the top level are packed together into one archive called `loose_name`.
-    The main output folder itself is never archived. If src is dest (a run folder made by Sort Output / Run Name)
-    everything is done in place. Items that fail to pack are kept as they are, never lost."""
-    mode = _archive_mode(config)
-    replace = config.get("replace_output", True)
-    inplace = src.resolve() == dest.resolve()
-    rows, notes, failed = [], [], []
-    loose_images, packed, cancelled = [], 0, False
-
-    def handle(res, label, source_files_dir=None, source_files=()):
-        nonlocal packed, cancelled
-        if res[0] == "ok":
-            packed += 1
-            rows.append(f"    {label}  →  {res[1].name}  ({_fmt_size(res[2])})")
-            if source_files_dir is not None:
-                shutil.rmtree(source_files_dir, ignore_errors=True)
-                if source_files_dir.exists():
-                    notes.append(f"  ⚠ {label}: archive saved, but the original folder could not be removed.")
-            for f in source_files:
-                try:
-                    f.unlink()
-                except OSError:
-                    notes.append(f"  ⚠ {f.name}: archive saved, but the original file could not be removed.")
-        elif res[0] == "cancelled":
-            cancelled = True
-        else:
-            failed.append((Path(label), res[1]))
-
-    entries = sorted(src.iterdir(), key=lambda x: natural_sort_key(x.name))
-    todo = sum(1 for e in entries if e.is_dir() and not e.is_symlink()) \
-        + (1 if any(e.is_file() and e.suffix.lower() in CBZ_IMAGE_EXTENSIONS for e in entries) else 0)
-    if mode and todo:
-        print(f"  Packing {todo} item(s) as {mode}...")
-
-    for e in entries:
-        if cancel is not None and cancel.is_set():
-            cancelled = True
-            break
-        try:
-            if e.is_dir() and not e.is_symlink():
-                if config.get("keep_documents_unarchived", True):
-                    documents = sorted(
-                        (f for f in e.rglob("*") if f.is_file()
-                         and f.suffix.lower() in DOCUMENT_EXTENSIONS),
-                        key=lambda f: natural_sort_key(_rel(f, e)),
-                    )
-                    for doc in documents:
-                        shutil.move(str(doc), str(_free_name(dest, doc.name, replace)))
-                    # Remove empty nested directories left after extracting documents.
-                    for folder in sorted((f for f in e.rglob("*") if f.is_dir()),
-                                         key=lambda f: len(f.parts), reverse=True):
-                        try:
-                            folder.rmdir()
-                        except OSError:
-                            pass
-                if mode:
-                    files = [f for f in e.rglob("*") if f.is_file()]
-                    if not files:
-                        shutil.rmtree(e, ignore_errors=True)         # an empty folder has nothing to pack
-                        continue
-                    handle(_write_archive(config, files, e, dest, e.name, mode, cancel, replace, notes),
-                           e.name, source_files_dir=e)
-                elif not inplace:
-                    if any(e.iterdir()):
-                        shutil.move(str(e), str(_free_name(dest, e.name, replace, is_dir=True)))
-                    else:
-                        shutil.rmtree(e, ignore_errors=True)
-            elif e.is_file():
-                if mode and e.suffix.lower() in CBZ_IMAGE_EXTENSIONS:
-                    loose_images.append(e)
-                elif not inplace:
-                    shutil.move(str(e), str(_free_name(dest, e.name, replace)))
-        except Exception as exc:
-            failed.append((e, str(exc)))
-        if cancelled:
-            break
-
-    if loose_images and mode and not cancelled:
-        handle(_write_archive(config, loose_images, src, dest, loose_name, mode, cancel, replace, notes),
-               loose_name, source_files=loose_images)
-
-    if rows:
-        with _Section(config, f"  Archives ({len(rows)})") as s:
-            for row in rows:
-                s.add(row)
-    for note in notes:
-        print(note)
-    if cancelled:
-        print("  Packing cancelled. The remaining results were saved as they are.")
-    if failed:
-        _print_summary(config, copied=packed, failed=failed, label="archived")
-    elif packed:
-        print(f"  Saved: {packed} archive(s) → {_shown(dest)}")
-
-    if not inplace:
-        _sweep(src, dest, replace)
-
-
-def _sweep(src, dest, replace):
-    """Moves whatever is still in the staging folder `src` into `dest` as it is, then removes `src`."""
-    if not src.exists():
-        return
-    for e in list(src.iterdir()):
-        try:
-            shutil.move(str(e), str(_free_name(dest, e.name, replace, e.is_dir() and not e.is_symlink())))
-        except Exception as exc:
-            print(f"  ⚠ Could not move {e.name} into the output folder: {exc}")
-    try:
-        src.rmdir()
-    except OSError:
-        pass
-    if src.exists():
-        print(f"  ⚠ Some results are still in {src}")
-
-
-def settle_runs(config):
-    """Call when a job ends, however it ended (finished, cancelled, crashed). A tool that stopped early never reached
-    _finalize_output(), so its results are still in the hidden staging folder: move them, as they are, into the
-    main output folder so nothing is hidden or lost."""
-    me = threading.get_ident()
-    with _RUNS_LOCK:
-        open_runs = [(p, r) for p, r in _RUNS.items() if r["thread"] == me and not r["done"]]
-    for p, rec in open_runs:
-        _sweep(Path(p), rec["root"], config.get("replace_output", True))
-        rec["done"] = True
-
-
-def recover_stale_runs(config):
-    """At start-up: results left in a hidden staging folder by a crash or a force-quit are moved into the output folder."""
-    out = config.get("output")
-    root = Path(out) / "output" if out else None
-    if root is None or not root.is_dir():
-        return
-    for e in root.iterdir():
-        if e.is_dir() and e.name.startswith(STAGING_PREFIX):
-            _sweep(e, root, config.get("replace_output", True))
-
-
-def _finalize_output(config, out, cancel=None):
-    """The last step of every successful tool: put the results in the output folder (packing them if wanted),
-    then clear Input (if wanted)."""
-    with _RUNS_LOCK:
-        rec = _RUNS.get(str(out))
-    if rec is not None:                      # results are in a staging folder inside the main output folder
-        _place_results(config, out, rec["root"], rec["operation"], cancel)
-        rec["done"] = True
-    else:                                    # a run folder of its own (Sort Output / Run Name): pack in place
-        _place_results(config, out, out, out.name, cancel)
-    do_auto_clear(config)
-
-
-def _shown(out):
-    """The folder to show the person. Results written to a hidden staging folder end up in the main output folder."""
-    with _RUNS_LOCK:
-        rec = _RUNS.get(str(out))
-    return rec["root"] if rec is not None else out
 
 
 def folders_to_pdf(config, cancel=None):
@@ -1215,7 +831,7 @@ def folders_to_pdf(config, cancel=None):
                 raw_name = f"{folder.name} (loose images)" if unit is folder and subfolders else unit.name
                 safe_name = re.sub(r'[^\w\s\-.]', '', raw_name).strip() or raw_name
                 if paths:
-                    safe_name = _unique_output_stem(
+                    safe_name = unique_output_stem(
                         out, safe_name, f".{_doc_format(config)}", used_book_paths).name
                 label = "Loose images" if unit is folder and subfolders else (
                     unit.name if unit is folder else f"{folder.name} / {unit.name}")
@@ -1366,17 +982,8 @@ def images_to_pdf(config, cancel=None):
     print("")
 
 
-def _folder_format_title(config):
-    return {"zip": "ZIP", "cbz": "CBZ", "uncompressed": "Uncompressed"}.get(
-        config.get("zip_compression", "cbz"), "CBZ")
-
-
 def _folder_tool_name(config, name):
-    if config.get("zip_compression", "cbz") == "uncompressed":
-        return name
-    if name == "Folder Renamer":
-        return f"{_folder_format_title(config)} Renamer"
-    return f"{_folder_format_title(config)} {name}"
+    return folder_tool_name(config, name)
 
 
 def folder_renamer(config, cancel=None):
@@ -1429,12 +1036,16 @@ def folder_renamer(config, cancel=None):
         param1 = input("Prefix to add: ")
         if param1 == SENTINEL:
             return _cancel()
+        if not _validate_rename_text(param1):
+            return
         for f in folders:
             preview.append((f, out / (param1 + f.name)))
     elif mode == "suffix":
         param1 = input("Suffix to add: ")
         if param1 == SENTINEL:
             return _cancel()
+        if not _validate_rename_text(param1):
+            return
         for f in folders:
             preview.append((f, out / (f.name + param1)))
     elif mode == "replace":
@@ -1448,6 +1059,8 @@ def folder_renamer(config, cancel=None):
         param2 = input("Replace with (Enter for blank): ")
         if param2 == SENTINEL:
             return _cancel()
+        if not _validate_rename_text(param1) or not _validate_rename_text(param2):
+            return
         for f in folders:
             preview.append((f, out / f.name.replace(param1, param2)))
     elif mode == "extract number":
@@ -1474,7 +1087,10 @@ def folder_renamer(config, cancel=None):
         return
 
     print(f"  {len(preview)} folder(s) to rename{f', {len(skipped)} skipped' if skipped else ''}.")
-    if _warn_name_collisions(config, preview):
+    if not _validate_rename_preview(out, preview, src, folders=True):
+        print("")
+        return
+    if _has_name_conflicts(config, preview):
         print("")
         return
     with _Section(config, f"  Preview ({len(preview)})") as s:
@@ -1552,11 +1168,15 @@ def file_renamer(config, cancel=None):
         param1 = input("Prefix to add: ")
         if param1 == SENTINEL:
             return _cancel()
+        if not _validate_rename_text(param1):
+            return
         preview = [(f, out / f.relative_to(src).parent / (param1 + f.name)) for f in items]
     elif mode == "suffix":
         param1 = input("Suffix to add (before extension): ")
         if param1 == SENTINEL:
             return _cancel()
+        if not _validate_rename_text(param1):
+            return
         preview = [(f, out / f.relative_to(src).parent / (f.stem + param1 + f.suffix)) for f in items]
     elif mode == "replace":
         param1 = input("Find: ")
@@ -1569,11 +1189,15 @@ def file_renamer(config, cancel=None):
         param2 = input("Replace with (Enter for blank): ")
         if param2 == SENTINEL:
             return _cancel()
+        if not _validate_rename_text(param1) or not _validate_rename_text(param2):
+            return
         preview = [(f, out / f.relative_to(src).parent / f.name.replace(param1, param2)) for f in items]
     elif mode == "sequence":
         param1 = input("Base name (leave blank for numbers only): ")
         if param1 == SENTINEL:
             return _cancel()
+        if not _validate_rename_text(param1):
+            return
         start = input("Start number (default 1): ").strip()
         if start == SENTINEL:
             return _cancel()
@@ -1603,7 +1227,10 @@ def file_renamer(config, cancel=None):
         print("")
         return
 
-    if _warn_name_collisions(config, preview):
+    if not _validate_rename_preview(out, preview, src):
+        print("")
+        return
+    if _has_name_conflicts(config, preview):
         print("")
         return
     with _Section(config, f"  Preview ({len(preview)})") as s:
@@ -1636,21 +1263,6 @@ def file_renamer(config, cancel=None):
     print(f"  Done! → {_shown(out)}")
     print("")
 
-
-def _collect_nested_images(folder, use_sort):
-    items = sorted(folder.iterdir(), key=lambda x: natural_sort_key(x.name)) if use_sort else list(folder.iterdir())
-    images, skipped = [], []
-    for item in items:
-        if item.is_file():
-            if item.suffix.lower() in IMAGE_EXTENSIONS:
-                images.append(item)
-            else:
-                skipped.append((item, "unsupported type"))
-        elif item.is_dir():
-            child_images, child_skipped = _collect_nested_images(item, use_sort)
-            images.extend(child_images)
-            skipped.extend(child_skipped)
-    return images, skipped
 
 
 def combine_image_sets(config, cancel=None):
@@ -1707,7 +1319,7 @@ def combine_image_sets(config, cancel=None):
                 images, skipped = collect_direct_image_paths(
                     target, IMAGE_EXTENSIONS, use_sort=use_sort)
             else:
-                images, skipped = _collect_nested_images(target, use_sort)
+                images, skipped = collect_image_paths(target, IMAGE_EXTENSIONS, use_sort=use_sort)
             total_skipped.extend(skipped)
 
             # Show this set (count, size, and each image with the number it will get) BEFORE copying it.
@@ -1816,7 +1428,7 @@ def image_converter(config, cancel=None):
         throttle_if_needed(config, cancel)
         dest_dir = out / img_path.relative_to(src).parent
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = _unique_output_path(dest_dir / (img_path.stem + ext))
+        dest = unique_path(dest_dir / (img_path.stem + ext))
         src_ext = img_path.suffix.lower()
         already_correct = src_ext == ext or (ext == ".jpg" and src_ext == ".jpeg")
         if already_correct:
@@ -2288,7 +1900,7 @@ def pdf_to_images(config, cancel=None):
             print(f"  Cancelled. ({total_pages} pages exported so far)")
             print("")
             return
-        pdf_out = _unique_output_path(out / pdf_path.stem, used_pdf_dirs, directory=True)
+        pdf_out = unique_path(out / pdf_path.stem, used_pdf_dirs, directory=True)
         pdf_out.mkdir(exist_ok=True)
         if pdf_path.suffix.lower() == ".epub":
             print(f"  Extracting: {pdf_path.name}...")
@@ -2594,3 +2206,11 @@ def status(config):
         print("Output  —  empty")
 
     print("")
+
+
+configure_output_support(
+    natural_sort_key=natural_sort_key, _rel=_rel, _fmt_size=_fmt_size, _total_size=_total_size,
+    _Section=_Section, _print_summary=_print_summary, _is_no_space=_is_no_space,
+    throttle_if_needed=throttle_if_needed, DOCUMENT_EXTENSIONS=DOCUMENT_EXTENSIONS,
+    CBZ_IMAGE_EXTENSIONS=CBZ_IMAGE_EXTENSIONS, _ALREADY_COMPRESSED=_ALREADY_COMPRESSED,
+)
