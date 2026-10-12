@@ -22,7 +22,7 @@ PREF_TIPS = {
     "replace_output":             "When enabled, a new result replaces an older one with the same name. In your own run / operation folders that is the whole folder; in the main output folder it is each file, folder or archive with the same name.\n When disabled, the new result gets a number added to its name instead (Ch 1 (2).cbz).",
     "sort_output":                "Puts results in a subfolder named after each tool.\n If outputs are also named, they are named within the tool folder.\n With this and Run Name both off, results go straight into the main output folder.",
     "guide_empty_input":          "Dims the tool buttons when the Input folder is empty\n A visual reminder to add an Input.",
-    "show_tooltips":              "Shows the small 'i' hint icons next to buttons and settings.\n Takes effect after you press Save.",
+    "show_tooltips":              "Shows the small 'i' hint icons next to buttons and settings. This setting applies immediately.",
     "log_default_expanded":       "Collapsible areas of the Log, not the toolbar,\n are expanded by default rather than collapsed.",
     "show_timestamps":            "Prints a timestamp and divider line in the log before each Operation.\n Happens for all Tools and the Status Utility.",
     "open_output_recent":         "When enabled, the Open Output button opens the most recent output rather than the entire Output folder.\n Useful for jumping straight to your latest result.",
@@ -144,7 +144,7 @@ def show_preferences(app):
     content_area.pack(side='left', fill='both', expand=True)
 
     pages = {}
-    for name in ("Paths", "General", "Tools", "Hotkeys", "Throttle", "Buttons", "Themes"):
+    for name in ("Paths", "General", "Tools", "Hotkeys", "Buttons", "Themes", "Advanced"):
         f = tk.Frame(content_area, bg=t["bg"], padx=16, pady=12)
         f.grid(row=0, column=0, sticky='nsew')
         pages[name] = f
@@ -289,13 +289,11 @@ def show_preferences(app):
     general_fields = [
         ("ui_mode",               "UI Mode",                        "combo", ["classic", "dropdown"]),
         ("log_blank_lines",       "Double Space in Log",            "check", None),
-        ("allow_concurrent_jobs", "Concurrent Operations",          "check", None),
         ("auto_clear_input",      "Clear Input after Operation",    "check", None),
         ("confirm_clear_input",   "Confirm before Clearing Input",  "check", None),
         ("confirm_clear_output",  "Confirm before Clearing Output", "check", None),
         ("ask_run_name",          "Run Name",                       "check", None),
         ("replace_output",        "Replace Output",                 "check", None),
-        ("sort_output",           "Sort Output by Operation",       "check", None),
         ("guide_empty_input",     "Dim Tools when Input Empty",     "check", None),
         ("show_tooltips",         "Show Tooltips",                  "check", None),
         ("log_default_expanded",  "Expand Log Dialogue by Default", "check", None),
@@ -320,18 +318,20 @@ def show_preferences(app):
         ("default_pdf_to_images_fmt",   "PDF to Images: Default Format", "combo", ["ask", "jpg", "png"]),
         ("default_dedupe_mode",         "Find Duplicates: Default Mode", "combo", ["ask", "keep one copy", "delete all"]),
         ("default_dedupe_hash",         "Find Duplicates: Hash Method",  "combo", ["exact", "perceptual"]),
-        ("default_dpi",                 "Default DPI (PDF to Images)",   "combo", ["ask","72","96","150","200","300","600"]),
         ("zip_extract_input",           "Unpack Zip Files in Input",     "check", None),
+    ]
+
+    advanced_fields = [
+        ("allow_concurrent_jobs", "Concurrent Operations",          "check", None),
+        ("sort_output",           "Sort Output by Operation",       "check", None),
+        ("default_dpi",            "Default DPI (PDF to Images)",     "combo", ["ask","72","96","150","200","300","600"]),
+        ("throttle_cpu", "Max CPU % (0 = off)",    "combo", ["0","50","60","70","80","90"]),
+        ("throttle_mem", "Max Memory % (0 = off)", "combo", ["0","50","60","70","80","90"]),
     ]
 
     hotkey_fields = [
         ("hotkey_continue", "Continue Hotkey", "combo", ["Return","space","Right"]),
         ("hotkey_cancel",   "Cancel Hotkey",   "combo", ["Escape","space","Left"]),
-    ]
-
-    throttle_fields = [
-        ("throttle_cpu", "Max CPU % (0 = off)",    "combo", ["0","50","60","70","80","90"]),
-        ("throttle_mem", "Max Memory % (0 = off)", "combo", ["0","50","60","70","80","90"]),
     ]
 
     vars_ = {}
@@ -360,6 +360,13 @@ def show_preferences(app):
                 v = tk.StringVar(value=raw_val)
                 FlatDropdown(page, v, opts, t, win).grid(row=row, column=1, sticky='w')
             vars_[key] = v
+            if key == "show_tooltips":
+                def apply_tooltip_setting(*_, variable=v):
+                    app.config["show_tooltips"] = bool(variable.get())
+                    from Manager import save_config
+                    save_config(app.config)
+                    app._rebuild_buttons()
+                v.trace_add("write", apply_tooltip_setting)
 
     p = pages["General"]
     Label(p, text="General", font=('', 8, 'bold'), bg=t["bg"]).grid(
@@ -375,13 +382,6 @@ def show_preferences(app):
     Label(p, text="Hotkeys", font=('', 8, 'bold'), bg=t["bg"]).grid(
         row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
     build_fields(p, hotkey_fields)
-
-    p = pages["Throttle"]
-    Label(p, text="Throttle", font=('', 8, 'bold'), bg=t["bg"]).grid(
-        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
-    Label(p, text="Limit resource usage during jobs.", fg=t["hint_fg"],
-             bg=t["bg"], font=('', 8)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
-    build_fields(p, throttle_fields, start_row=2)
 
     # ── BUTTONS tab ────────────────────────────────────────────────────────
     p = pages["Buttons"]
@@ -455,6 +455,13 @@ def show_preferences(app):
     reset_btn.bind("<Button-1>", lambda e: reset_themes())
     reset_btn.bind("<Enter>", lambda e: reset_btn.configure(bg=t["hover"]))
     reset_btn.bind("<Leave>", lambda e: reset_btn.configure(bg=t["bg"]))
+
+    p = pages["Advanced"]
+    Label(p, text="Advanced", font=('', 8, 'bold'), bg=t["bg"]).grid(
+        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
+    Label(p, text="Limit resource usage during jobs.", fg=t["hint_fg"],
+          bg=t["bg"], font=('', 8)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
+    build_fields(p, advanced_fields, start_row=2)
 
     # ── Save / Cancel ──────────────────────────────────────────────────────
     def _collect_themes():
