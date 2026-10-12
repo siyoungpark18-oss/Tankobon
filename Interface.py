@@ -1125,22 +1125,8 @@ class App:
             indent = 18
             char_w = max(1, tkfont.Font(root=self.root, font=self._uf()).measure("0"))
             opt_chars = max(8, 22 - round(indent / char_w))
-            remember_var = tk.BooleanVar(value=False)
-            if config_key:
-                remember = tk.Checkbutton(
-                    body, text="Don't ask again", variable=remember_var,
-                    bg=t["bg"], fg=t["fg"], activebackground=t["bg"],
-                    activeforeground=t["fg"], selectcolor=t["bg"],
-                    font=self._uf(), bd=0, highlightthickness=0, anchor='w')
-                remember.pack(anchor='w', padx=(indent, 0), pady=(4, 2))
-            last_choices = self.config.get("last_tool_options", {})
-            if not isinstance(last_choices, dict):
-                last_choices = {}
-            last_used = last_choices.get(config_key) if config_key else None
             for opt in options:
                 opt_label = self.OPTION_LABELS.get(opt, opt)
-                if opt == last_used:
-                    opt_label += "  (last used)"
                 row = tk.Frame(body, bg=t["bg"])
                 row.pack(fill='x', pady=1)
 
@@ -1151,8 +1137,8 @@ class App:
                 self._suboption_labels.setdefault(label, []).append(opt_lbl)
 
                 opt_lbl.bind("<Button-1>",
-                             lambda e, fn=run_fn, o=opt, jn=label, rv=remember_var:
-                             self._inject_and_run(fn, o, jn, remember_choice=rv.get()))
+                             lambda e, fn=run_fn, o=opt, jn=label:
+                             self._inject_and_run(fn, o, jn))
                 opt_lbl.bind("<Enter>", lambda e, b=opt_lbl: b.configure(bg=self._theme()["hover"]))
                 opt_lbl.bind("<Leave>", lambda e, b=opt_lbl: b.configure(bg=self._theme()["bg"]))
 
@@ -1206,7 +1192,7 @@ class App:
         with self._jobs_lock:
             return [n for n in self._running_jobs if n != "Status"]
 
-    def _inject_and_run(self, run_fn, choice, job_name, remember_choice=False):
+    def _inject_and_run(self, run_fn, choice, job_name):
         if job_name == "Add Input":
             self._run(lambda c=choice: self._pick_files_work(c), job_name=job_name)
             return
@@ -1216,20 +1202,12 @@ class App:
             self._run(run_fn, job_name=job_name)
             return
 
-        # The tool gets its own settings copy. Its choice is remembered, and becomes
-        # the preference default only when "Don't ask again" is checked.
+        # The tool gets its OWN copy of the settings with the chosen option filled in.
+        # The real settings (self.config) are never touched, so nothing can leak into config.json.
         cfg = self._production_config()
         config_key = self.TOOL_MODE_CONFIG_KEY.get(job_name)
         if choice is not None and config_key:
             cfg[config_key] = choice
-            last_choices = self.config.get("last_tool_options")
-            if not isinstance(last_choices, dict):
-                last_choices = {}
-                self.config["last_tool_options"] = last_choices
-            last_choices[config_key] = choice
-            if remember_choice:
-                self.config[config_key] = choice
-            save_config(self.config)
         self._run(lambda: tool(cfg, self.cancel_event), job_name=job_name)
 
     def _run(self, fn, ignore_lock=False, job_name="Job"):
