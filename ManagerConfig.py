@@ -1,11 +1,9 @@
-"""Configuration, input/output paths, and per-run staging for Manager tools."""
+"""Configuration and input paths for Tankobon."""
 
 import copy
 import json
 import os
 import shutil
-import tempfile
-import threading
 from pathlib import Path
 
 
@@ -114,80 +112,6 @@ def save_config(config):
 def get_input(config):
     return Path(config["input"]) / "Input"
 
-
-STAGING_PREFIX = ".tankobon_run_"
-_RUNS = {}  # staging folder -> {root, operation, thread, done}
-_RUNS_LOCK = threading.Lock()
-
-
-def _validate_run_name(run_name):
-    """Reject names that could escape the output directory on any supported platform."""
-    name = str(run_name).strip()
-    if (name in (".", "..") or Path(name).is_absolute()
-            or any(sep in name for sep in ("/", "\\", ":"))
-            or any(ord(char) < 32 for char in name)):
-        raise ValueError("Run names must be a single folder name without path separators.")
-    return name
-
-
-def _unique_output_path(path, reserved=None, directory=False):
-    """Return a non-colliding output path, adding ' (2)', ' (3)', etc. as needed."""
-    reserved = reserved if reserved is not None else set()
-    path = Path(path)
-
-    def key(candidate):
-        return os.path.normcase(os.path.abspath(str(candidate))).casefold()
-
-    suffix = "" if directory else path.suffix
-    stem = path.name if directory else path.name[:-len(suffix)] if suffix else path.name
-    candidate = path
-    number = 2
-    while candidate.exists() or key(candidate) in reserved:
-        candidate = path.with_name(f"{stem} ({number}){suffix}")
-        number += 1
-    reserved.add(key(candidate))
-    return candidate
-
-
-def _unique_output_stem(parent, name, extension, reserved=None):
-    """Choose a unique stem while accounting for save_book's appended extension."""
-    target = _unique_output_path(Path(parent) / f"{name}{extension}", reserved)
-    return target.with_name(target.name[:-len(extension)]) if extension else target
-
-
-def get_output(config, operation, run_name):
-    """Choose an output directory, isolating each run before results are finalized."""
-    root = Path(config["output"]) / "output"
-    if run_name:
-        run_name = _validate_run_name(run_name)
-    if not (config.get("sort_output", False) or run_name):
-        root.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=root))
-        with _RUNS_LOCK:
-            _RUNS[str(staging)] = {
-                "root": root,
-                "operation": operation,
-                "thread": threading.get_ident(),
-                "done": False,
-            }
-        return staging
-    run_name = run_name or "Output"
-    base = root / operation / run_name if config.get("sort_output", False) else root / run_name
-    if config.get("replace_output", True) and base.exists():
-        shutil.rmtree(base)
-        folder = base
-    elif not config.get("replace_output", True) and base.exists():
-        counter = 1
-        while True:
-            candidate = base.parent / f"{base.name}{counter}"
-            if not candidate.exists():
-                folder = candidate
-                break
-            counter += 1
-    else:
-        folder = base
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
 
 
 def do_auto_clear(config):
