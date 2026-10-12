@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 
 from Themes import THEMES
+from ManagerConfig import save_config
 
 
 PATH_TIPS = {
@@ -475,7 +476,6 @@ def show_preferences(app):
                 custom[mode] = changed
         return custom
 
-    from Manager import save_config
     pending = {}
     last_raw = {key: var.get() for key, var in vars_.items()}
 
@@ -502,12 +502,12 @@ def show_preferences(app):
     def _apply_side_effects(key):
         if key == "default_doc_format":
             app.current_doc_format = app.config[key]
-            app._refresh_format_tool_names()
+            app._validate_production_formats()
             app._rebuild_buttons()
             app._update_format_selector()
         elif key == "zip_compression":
             app.current_folder_format = app.config[key]
-            app._refresh_format_tool_names()
+            app._validate_production_formats()
             app._rebuild_buttons()
             app._update_format_selector()
         elif key in ("show_tooltips", "guide_empty_input"):
