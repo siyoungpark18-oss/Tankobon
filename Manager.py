@@ -80,9 +80,9 @@ DEFAULTS = { #The default configurations. These should all be able to change in 
     "preview_limit":              10,     # max lines a Log expansion shows (0 = show everything)
     "show_folder_stats":          True,   # show image count + size next to each folder in the Log
     "zip_extract_input":          True,   # unpack .zip / .cbz files found in Input before a tool runs
-    "default_doc_format":         "pdf",  # what Folders to PDF / Images to PDF write: "pdf" or "epub"
+    "default_doc_format":         "epub",  # what Folders to PDF / Images to PDF write: "pdf" or "epub"
     "epub_direction":             "rtl",  # reading direction of EPUBs the tools write: "rtl" (manga) or "ltr"
-    "zip_compression":            "zip",  # default folder format: "cbz", "zip", or "uncompressed"
+    "zip_compression":            "cbz",  # default folder format: "cbz", "zip", or "uncompressed"
     "keep_documents_unarchived":  True,   # PDFs and EPUBs go directly into Output instead of inside result archives
 }
 
