@@ -4,8 +4,6 @@ from pathlib import Path
 import re
 import shutil
 import img2pdf
-import json
-import copy
 import os
 import hashlib
 import time
@@ -23,6 +21,12 @@ from urllib.parse import unquote
 from xml.sax.saxutils import escape as _xml_escape
 from pypdf import PdfReader, PdfWriter
 import sys as _sys
+from ManagerConfig import (
+    DEFAULTS, CONFIG_PATH, STAGING_PREFIX, _RUNS, _RUNS_LOCK,
+    take_config_warning, load_config, save_config, get_input,
+    _validate_run_name, _unique_output_path, _unique_output_stem,
+    get_output, do_auto_clear, resolve_sort,
+)
 
 def _get_poppler_path():
     base = getattr(_sys, '_MEIPASS', None)
@@ -32,212 +36,9 @@ def _get_poppler_path():
 
 _POPPLER_PATH = _get_poppler_path()
 
-#PATHS————————————————————————————————————————————————————————————————————————————————————————————————————
-CONFIG_PATH = Path.home() / ".tankobon" / "config.json"
-
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif'} #DEFAULT IMAGE EXTENSIONS FOR MOST TOOLS
 
 SENTINEL = "\x00CANCELLED\x00"
-
-#DEFAULTS——————————————————————————————————————————————————————————————————————————————————————————————————
-DEFAULTS = { #The default configurations. These should all be able to change in preferences.py
-    "input":                     "",
-    "output":                    "",
-    "default_sort":              "natural",
-    "default_dpi":               "72",
-    "default_img_fmt":           "ask",
-    "default_pdf_to_images_fmt": "ask",
-    "auto_clear_input":          False,
-    "confirm_clear_input":       False,
-    "confirm_clear_output":      True,
-    "ask_run_name":              True,
-    "replace_output":            True,
-    "sort_output":               False,
-    "hotkey_continue":           "Return",
-    "hotkey_cancel":             "Escape",
-    "throttle_cpu":              80,
-    "throttle_mem":              80,
-    "dark_mode":                 False,
-    "min_free_gb":               10,
-    "log_default_expanded":      False,
-    "show_timestamps":           True,
-    "open_output_recent":        False,
-    "first_launch":              True,
-    "log_blank_lines":           False,
-    "log_font_size":             11,
-    "ui_font_size":              10,
-    "default_images_to_pdf_mode": "ask",
-    "default_folders_to_pdf_mode": "ask",
-    "default_folder_renamer_mode": "ask",
-    "default_file_renamer_mode":   "ask",
-    "default_dedupe_mode":        "ask",
-    "default_dedupe_hash":        "exact",
-    "guide_empty_input":          True,
-    "show_tooltips":              True,
-    "allow_concurrent_jobs":      False,
-    "last_tool_options":          {},
-    "themes":                     {},
-    "preview_limit":              10,     # max lines a Log expansion shows (0 = show everything)
-    "show_folder_stats":          True,   # show image count + size next to each folder in the Log
-    "zip_extract_input":          True,   # unpack .zip / .cbz files found in Input before a tool runs
-    "default_doc_format":         "epub",  # what Folders to PDF / Images to PDF write: "pdf" or "epub"
-    "epub_direction":             "rtl",  # reading direction of EPUBs the tools write: "rtl" (manga) or "ltr"
-    "zip_compression":            "cbz",  # default folder format: "cbz", "zip", or "uncompressed"
-    "keep_documents_unarchived":  True,   # PDFs and EPUBs go directly into Output instead of inside result archives
-}
-
-#FUNCTIONS——————————————————————————————————————————————————————————————————————————————————————————————————
-_config_warning = None
-
-
-def take_config_warning():
-    """Returns (once) a message if the config file had to be reset while loading."""
-    global _config_warning
-    msg, _config_warning = _config_warning, None
-    return msg
-
-
-def load_config():
-    global _config_warning
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    data = None
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH, 'r') as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError("the file does not contain a settings object")
-        except (ValueError, OSError) as e:       # json.JSONDecodeError is a ValueError
-            backup = CONFIG_PATH.with_name(CONFIG_PATH.name + ".bak")
-            try:
-                shutil.copy2(CONFIG_PATH, backup)
-            except OSError:
-                pass
-            _config_warning = (f"  ⚠ Your settings file could not be read ({e}). Default settings are being used. "
-                               f"The old file was kept as {backup.name}.")
-            data = None
-    if data is None:
-        return copy.deepcopy(DEFAULTS)
-    # Migrate the former shared confirmation setting when the new per-folder
-    # settings are absent. New installs default to output confirmation only.
-    legacy_confirm = data.get("confirm_clear")
-    if legacy_confirm is not None:
-        data.setdefault("confirm_clear_input", bool(legacy_confirm))
-        data.setdefault("confirm_clear_output", bool(legacy_confirm))
-    data.pop("confirm_clear", None)
-    for k, v in DEFAULTS.items():
-        data.setdefault(k, copy.deepcopy(v))
-    return data
-
-
-def save_config(config):
-    # Write to a temp file first, then swap it in. A crash mid-write can no longer destroy the settings.
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
-    with open(tmp, 'w') as f:
-        json.dump(config, f, indent=2)
-    os.replace(tmp, CONFIG_PATH)
-
-
-def get_input(config):
-    return Path(config["input"]) / "Input"
-
-
-STAGING_PREFIX = ".tankobon_run_"
-_RUNS = {}                      # staging folder -> {"root", "operation", "thread", "done"}
-_RUNS_LOCK = threading.Lock()
-
-
-def _validate_run_name(run_name):
-    """Reject names that could escape the output directory on any supported platform."""
-    name = str(run_name).strip()
-    if (name in (".", "..") or Path(name).is_absolute()
-            or any(sep in name for sep in ("/", "\\", ":"))
-            or any(ord(char) < 32 for char in name)):
-        raise ValueError("Run names must be a single folder name without path separators.")
-    return name
-
-
-def _unique_output_path(path, reserved=None, directory=False):
-    """Return a non-colliding output path, adding ' (2)', ' (3)', etc. as needed."""
-    reserved = reserved if reserved is not None else set()
-    path = Path(path)
-
-    def key(candidate):
-        return os.path.normcase(os.path.abspath(str(candidate))).casefold()
-
-    original_name = path.name
-    suffix = "" if directory else path.suffix
-    stem = original_name if directory else path.name[:-len(suffix)] if suffix else path.name
-    candidate = path
-    number = 2
-    while candidate.exists() or key(candidate) in reserved:
-        candidate = path.with_name(f"{stem} ({number}){suffix}")
-        number += 1
-    reserved.add(key(candidate))
-    return candidate
-
-
-def _unique_output_stem(parent, name, extension, reserved=None):
-    """Choose a unique stem while accounting for save_book's appended extension."""
-    target = _unique_output_path(Path(parent) / f"{name}{extension}", reserved)
-    return target.with_name(target.name[:-len(extension)]) if extension else target
-
-
-def get_output(config, operation, run_name):
-    """Where a tool writes its results.
-    - Sort Output by Operation and/or a run name: a folder of its own (output/[operation/][run name]).
-    - Neither: results go straight into the main output folder (output/). The tool writes into a hidden staging
-      folder inside it first, and _finalize_output() moves the results out (packing them if wanted). That keeps
-      this run's results apart from earlier ones, so they can be packed (and replaced) safely."""
-    root = Path(config["output"]) / "output"
-    if run_name:
-        run_name = _validate_run_name(run_name)
-    if not (config.get("sort_output", False) or run_name):
-        root.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=root))
-        with _RUNS_LOCK:
-            _RUNS[str(staging)] = {"root": root, "operation": operation,
-                                   "thread": threading.get_ident(), "done": False}
-        return staging
-    run_name = run_name or "Output"
-    if config.get("sort_output", False):
-        base = root / operation / run_name
-    else:
-        base = root / run_name
-    if config.get("replace_output", True) and base.exists():
-        shutil.rmtree(base)
-        folder = base
-    elif not config.get("replace_output", True) and base.exists():
-        counter = 1
-        while True:
-            candidate = base.parent / f"{base.name}{counter}"
-            if not candidate.exists():
-                folder = candidate
-                break
-            counter += 1
-    else:
-        folder = base
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
-
-
-def do_auto_clear(config):
-    if config.get("auto_clear_input"):
-        src = get_input(config)
-        if src.exists():
-            count = sum(1 for _ in src.iterdir())
-            for item in src.iterdir():
-                try:
-                    shutil.rmtree(item) if item.is_dir() else item.unlink()
-                except Exception as e:
-                    print(f"  Auto-clear failed: {item.name}: {e}")
-            print(f"  Input cleared ({count} item(s) removed).")
-
-
-def resolve_sort(config):
-    return config.get("default_sort", "natural") != "none"
-
 
 _last_throttle_check = 0.0
 psutil.cpu_percent(interval=None)     # first call only primes the counter
@@ -348,22 +149,43 @@ def save_pdf(image_paths, output_path):
         print("  No images to save.")
         return
     print(f"  Converting {len(image_paths)} images → PDF...")
+    output_path = Path(output_path)
+    partial = output_path.with_name(output_path.name + ".partial")
     try:
-        with open(output_path, 'wb') as f:
-            f.write(img2pdf.convert([str(p) for p in image_paths]))
-    except Exception as e:
-        if _is_no_space(e):
-            print(f"  ✖ Disk full — not enough space to write PDF.")
-            raise
-        print(f"  img2pdf failed ({e}), falling back to Pillow...")
-        imgs = []
-        for p in image_paths:
-            img = Image.open(p).convert("RGB")
-            imgs.append(img)
-        if imgs:
-            imgs[0].save(output_path, save_all=True, append_images=imgs[1:])
+        try:
+            with open(partial, 'wb') as f:
+                f.write(img2pdf.convert([str(p) for p in image_paths]))
+        except Exception as e:
+            if _is_no_space(e):
+                print("  ✖ Disk full — not enough space to write PDF.")
+                raise
+            partial.unlink(missing_ok=True)
+            print(f"  img2pdf failed ({e}), falling back to Pillow...")
+            imgs = []
+            for p in image_paths:
+                with Image.open(p) as source:
+                    imgs.append(source.convert("RGB"))
+            if imgs:
+                imgs[0].save(partial, save_all=True, append_images=imgs[1:])
+        os.replace(partial, output_path)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
     size_mb = output_path.stat().st_size / (1024 * 1024)
     print(f"  Saved: {output_path.name}  ({size_mb:.1f} MB)")
+
+
+def _write_pdf_atomically(writer, output_path):
+    """Write a PDF beside its destination, then publish it only after completion."""
+    output_path = Path(output_path)
+    partial = output_path.with_name(output_path.name + ".partial")
+    try:
+        with open(partial, "wb") as f:
+            writer.write(f)
+        os.replace(partial, output_path)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
 
 
 # ══ EPUB SUPPORT ══════════════════════════════════════════════════════════════
@@ -642,17 +464,25 @@ def _cancel():
 
 
 def _warn_name_collisions(config, preview):
-    """preview = [(old_path, new_path), ...]. Warn if two items would end up with the same new name."""
+    """Report unsafe rename destinations and return True if copying must stop."""
     users = {}
+    existing = []
     for old, new in preview:
-        users.setdefault(new, []).append(old)
-    clashes = {new: olds for new, olds in users.items() if len(olds) > 1}
-    if not clashes:
-        return
-    print(f"  ⚠ {len(clashes)} new name(s) would be used more than once. Later items overwrite earlier ones!")
-    with _Section(config, f"  Name clashes ({len(clashes)})") as s:
-        for new, olds in clashes.items():
+        key = os.path.normcase(os.path.abspath(str(new))).casefold()
+        users.setdefault(key, (new, []))[1].append(old)
+        if new.exists():
+            existing.append((new, old))
+    clashes = [entry for entry in users.values() if len(entry[1]) > 1]
+    if not clashes and not existing:
+        return False
+    print("  ✖ Rename stopped because one or more output names already exist or repeat.")
+    print("    Choose a different naming mode or input set, then try again.")
+    with _Section(config, f"  Conflicting destinations ({len(clashes) + len(existing)})") as s:
+        for new, olds in clashes:
             s.add(f"    {new.name}  ←  " + ",  ".join(o.name for o in olds))
+        for new, old in existing:
+            s.add(f"    {new.name} already exists (from {old.name})")
+    return True
 
 
 def friendly_error(error):
@@ -873,7 +703,6 @@ def _get_working_folders(src, use_sort=True):
 #         folder that holds anything else is saved as a normal .zip instead, with a warning.
 
 ARCHIVE_EXTENSIONS    = {'.zip', '.cbz'}                       # .cbz (comic book archive) is just a zip
-ZIP_COMPRESSION_MODES = ("folder", "zip", "cbz")
 CBZ_IMAGE_EXTENSIONS  = IMAGE_EXTENSIONS | {'.webp'}           # what may go inside a .cbz
 _MAX_ARCHIVE_NESTING  = 3                                      # zip inside zip inside zip ...
 _JUNK_FILES           = {'.ds_store', 'thumbs.db', 'desktop.ini'}
@@ -1038,7 +867,7 @@ def extract_archives(config, src, cancel=None):
 
 def _archive_mode(config):
     """'zip', 'cbz', or None when results should stay as loose files and folders."""
-    mode = config.get("zip_compression", "zip")
+    mode = config.get("zip_compression", "cbz")
     return mode if mode in ("zip", "cbz") else None
 
 
@@ -1539,11 +1368,11 @@ def images_to_pdf(config, cancel=None):
 
 def _folder_format_title(config):
     return {"zip": "ZIP", "cbz": "CBZ", "uncompressed": "Uncompressed"}.get(
-        config.get("zip_compression", "zip"), "ZIP")
+        config.get("zip_compression", "cbz"), "CBZ")
 
 
 def _folder_tool_name(config, name):
-    if config.get("zip_compression", "zip") == "uncompressed":
+    if config.get("zip_compression", "cbz") == "uncompressed":
         return name
     if name == "Folder Renamer":
         return f"{_folder_format_title(config)} Renamer"
@@ -1645,7 +1474,9 @@ def folder_renamer(config, cancel=None):
         return
 
     print(f"  {len(preview)} folder(s) to rename{f', {len(skipped)} skipped' if skipped else ''}.")
-    _warn_name_collisions(config, preview)
+    if _warn_name_collisions(config, preview):
+        print("")
+        return
     with _Section(config, f"  Preview ({len(preview)})") as s:
         for old, new in preview:
             s.add(f"    {old.name}  →  {new.name}")
@@ -1772,7 +1603,9 @@ def file_renamer(config, cancel=None):
         print("")
         return
 
-    _warn_name_collisions(config, preview)
+    if _warn_name_collisions(config, preview):
+        print("")
+        return
     with _Section(config, f"  Preview ({len(preview)})") as s:
         for old, new in preview:
             s.add(f"    {old.name}  →  {new.name}")
@@ -1804,6 +1637,22 @@ def file_renamer(config, cancel=None):
     print("")
 
 
+def _collect_nested_images(folder, use_sort):
+    items = sorted(folder.iterdir(), key=lambda x: natural_sort_key(x.name)) if use_sort else list(folder.iterdir())
+    images, skipped = [], []
+    for item in items:
+        if item.is_file():
+            if item.suffix.lower() in IMAGE_EXTENSIONS:
+                images.append(item)
+            else:
+                skipped.append((item, "unsupported type"))
+        elif item.is_dir():
+            child_images, child_skipped = _collect_nested_images(item, use_sort)
+            images.extend(child_images)
+            skipped.extend(child_skipped)
+    return images, skipped
+
+
 def combine_image_sets(config, cancel=None):
     src = get_input(config)
     src.mkdir(parents=True, exist_ok=True)
@@ -1822,22 +1671,6 @@ def combine_image_sets(config, cancel=None):
 
     use_sort = resolve_sort(config)
     print(f"  Sort: {'natural' if use_sort else 'none'}")
-
-    def collect_images(folder):
-        all_items = sorted(folder.iterdir(), key=lambda x: natural_sort_key(x.name)) if use_sort else list(folder.iterdir())
-        images = []
-        skipped = []
-        for item in all_items:
-            if item.is_file():
-                if item.suffix.lower() in IMAGE_EXTENSIONS:
-                    images.append(item)
-                else:
-                    skipped.append((item, "unsupported type"))
-            elif item.is_dir():
-                sub_imgs, sub_skip = collect_images(item)
-                images.extend(sub_imgs)
-                skipped.extend(sub_skip)
-        return images, skipped
 
     folders = sorted([f for f in src.iterdir() if f.is_dir()],
                      key=lambda x: natural_sort_key(x.name)) if use_sort else [f for f in src.iterdir() if f.is_dir()]
@@ -1874,7 +1707,7 @@ def combine_image_sets(config, cancel=None):
                 images, skipped = collect_direct_image_paths(
                     target, IMAGE_EXTENSIONS, use_sort=use_sort)
             else:
-                images, skipped = collect_images(target)
+                images, skipped = _collect_nested_images(target, use_sort)
             total_skipped.extend(skipped)
 
             # Show this set (count, size, and each image with the number it will get) BEFORE copying it.
@@ -2329,8 +2162,7 @@ def pdf_combiner(config, cancel=None):
                 section.add(row)
         try:
             out_path = out / "combined.pdf"
-            with open(out_path, "wb") as f:
-                writer.write(f)
+            _write_pdf_atomically(writer, out_path)
             size_mb = out_path.stat().st_size / (1024 * 1024)
             print(f"  Saved: combined.pdf  ({total_pages} pages, {size_mb:.1f} MB)")
         except OSError as e:
@@ -2666,15 +2498,13 @@ def pdf_splitter(config, cancel=None):
                         for page in PdfReader(io.BytesIO(_image_to_pdf_bytes(epub_zf.read(epub_members[p])))).pages:
                             writer.add_page(page)
                     out_path = out / f"{stem}_part{i + 1}.pdf"
-                    with open(out_path, "wb") as f:
-                        writer.write(f)
+                    _write_pdf_atomically(writer, out_path)
                 else:
                     writer = PdfWriter()
                     for p in page_indices:
                         writer.add_page(reader.pages[p])
                     out_path = out / f"{stem}_part{i + 1}.pdf"
-                    with open(out_path, "wb") as f:
-                        writer.write(f)
+                    _write_pdf_atomically(writer, out_path)
                 direction = f" (reversed)" if descending else ""
                 part_rows.append(f"    Part {i + 1}/{part_count}: pages {a}–{b}{direction}  →  {out_path.name}")
                 written += 1
@@ -2764,55 +2594,3 @@ def status(config):
         print("Output  —  empty")
 
     print("")
-
-
-def info():
-    print("""
--- Tankobon --
-'folders to pdf'     'images to pdf'     'folder renamer'
-'file renamer'       'combine image sets' 'image converter'
-'find duplicates'    'pdf splitter'       'pdf combiner'
-'pdf to images'
-
--- Other --
-'status'  'exit'
-
-Zip files (.zip / .cbz) in Input are unpacked automatically.
-Each result folder is saved as its own zip by default; choose cbz or uncompressed in Preferences > Tools > Default Folder Production Format.
-
-All output goes to output/
-""")
-
-# Unused code. Manager.py primarily functions as a backend for Interface.py
-# The area below allos the manager.py to run on its own
-def command_line():
-    config = load_config()
-    print("\nTankobon — type 'info' for commands")
-    while True:
-        command = input(">>> ").strip().lower()
-        try:
-            if command == "info":                 info()
-            elif command == "folders to pdf":     folders_to_pdf(config)
-            elif command == "images to pdf":      images_to_pdf(config)
-            elif command == "folder renamer":     folder_renamer(config)
-            elif command == "file renamer":       file_renamer(config)
-            elif command == "combine image sets": combine_image_sets(config)
-            elif command == "image converter":    image_converter(config)
-            elif command == "pdf splitter":       pdf_splitter(config)
-            elif command == "pdf combiner":       pdf_combiner(config)
-            elif command == "pdf to images":      pdf_to_images(config)
-            elif command == "find duplicates":    find_duplicates(config)
-            elif command == "status":             status(config)
-            elif command == "exit":
-                print("exiting...")
-                break
-            else:
-                print("Invalid command. Type 'info' for list.")
-        except KeyboardInterrupt:
-            print("\nInterrupted.")
-        finally:
-            settle_runs(config)
-
-
-if __name__ == "__main__":
-    command_line()
