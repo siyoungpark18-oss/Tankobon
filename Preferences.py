@@ -13,7 +13,6 @@ PATH_TIPS = {
 }
 
 PREF_TIPS = {
-    "ui_mode":                    "Classic UI uses a combination of simple buttons and the keyboard to pick options.\n The Dropdown UI places options under a tool header.\n\n When tools are defaulted to a specific option, options are no longer prompted for either way.",
     "allow_concurrent_jobs":      "Run multiple different tools at the same time. With this, outputs can generate in quick succession.\n To prevent new outputs from replacing old ones, use the run name option and disable replace output.\n\n Generally leads to more errors and bugs and tends to spread computer resources thin.",
     "auto_clear_input":           "Automatically Empties the Input folder after an Operation is completed.",
     "confirm_clear_input":        "Asks before deleting everything inside the Input folder. Input usually holds copies of your files.",
@@ -164,8 +163,6 @@ def show_preferences(app):
 
     Label(sidebar, text="Preferences", font=('', 8),
              bg=t["btn_bg"], fg=t["hint_fg"], pady=8).pack(fill='x')
-    Label(sidebar, text="Changes save immediately. Most\nsettings take effect on the\nnext operation.", font=('', 7),
-          bg=t["btn_bg"], fg=t["hint_fg"], padx=8, pady=4, justify='left').pack(fill='x')
 
     for name in pages:
         lbl = Label(sidebar, text=name, anchor='w', padx=12,
@@ -289,7 +286,6 @@ def show_preferences(app):
 
     # ── GENERAL / TOOLS / HOTKEYS / THROTTLE tabs ──────────────────────────
     general_fields = [
-        ("ui_mode",               "UI Mode",                        "combo", ["classic", "dropdown"]),
         ("log_blank_lines",       "Double Space in Log",            "check", None),
         ("auto_clear_input",      "Clear Input after Operation",    "check", None),
         ("confirm_clear_input",   "Confirm before Clearing Input",  "check", None),
@@ -513,7 +509,7 @@ def show_preferences(app):
             app._refresh_format_tool_names()
             app._rebuild_buttons()
             app._update_format_selector()
-        elif key in ("show_tooltips", "ui_mode", "guide_empty_input"):
+        elif key in ("show_tooltips", "guide_empty_input"):
             app._rebuild_buttons()
         elif key in {item[0] for item in app.TOGGLEABLE}:
             app._rebuild_buttons()
