@@ -239,7 +239,7 @@ def prepare_poppler_mac():
 def build_app():
     print("Building .app with PyInstaller...")
 
-    source_files = ["Manager.py", "ManagerConfig.py", "ToolRegistry.py", "Log.py", "Preferences.py", "Themes.py"]
+    source_files = ["Manager.py", "ManagerConfig.py", "ManagerOutput.py", "ToolNames.py", "ToolRegistry.py", "Log.py", "Preferences.py", "Themes.py"]
 
     add_data_args = []
     for f in source_files:
