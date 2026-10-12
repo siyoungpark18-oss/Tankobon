@@ -308,7 +308,6 @@ def show_preferences(app):
     ]
 
     tools_fields = [
-        ("default_doc_format",          "File Production Format",         "combo", ["pdf", "epub"]),
         ("default_doc_format",          "Default File Production Format", "combo", ["pdf", "epub"]),
         ("zip_compression",             "Default Folder Production Format", "combo", ["cbz", "zip", "uncompressed"]),
         ("epub_direction",              "EPUB Reading Direction",         "combo", ["rtl", "ltr"]),
@@ -323,7 +322,6 @@ def show_preferences(app):
         ("default_dedupe_hash",         "Find Duplicates: Hash Method",  "combo", ["exact", "perceptual"]),
         ("default_dpi",                 "Default DPI (PDF to Images)",   "combo", ["ask","72","96","150","200","300","600"]),
         ("zip_extract_input",           "Unpack Zip Files in Input",     "check", None),
-        ("zip_compression",             "Output Archive",                "combo", ["zip", "cbz", "folder"]),
     ]
 
     hotkey_fields = [
