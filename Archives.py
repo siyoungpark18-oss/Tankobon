@@ -1,7 +1,6 @@
 """Safe extraction of zip and comic-book archives found in Input."""
 
 import errno
-import os
 import re
 import shutil
 import tempfile
