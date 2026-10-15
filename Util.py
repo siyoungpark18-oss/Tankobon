@@ -2,8 +2,10 @@
 
 import errno
 import re
+import sys
 import time
 from decimal import Decimal
+from pathlib import Path
 
 import psutil
 
@@ -21,20 +23,16 @@ psutil.cpu_percent(interval=None)  # Prime psutil's first CPU measurement.
 
 
 def natural_sort_key(name):
-    """Sort paths by components; compare dotted numbers like versions (1.2 before 1.10)."""
+    """Sort paths by components, treating dotted number runs as decimal values."""
     def component_key(component):
         tokens = []
         for chunk in re.split(r"(\d+(?:\.\d+)?)", component):
             if not chunk:
                 continue
             if re.fullmatch(r"\d+(?:\.\d+)?", chunk):
-                if "." in chunk:
-                    whole, fraction = chunk.split(".", 1)
-                    tokens.append((0, int(whole), int(fraction), chunk.casefold()))
-                else:
-                    tokens.append((0, int(chunk), -1, chunk.casefold()))
+                tokens.append((0, Decimal(chunk), chunk.casefold()))
             else:
-                tokens.append((1, chunk.casefold(), "", ""))
+                tokens.append((1, chunk.casefold(), ""))
         return tuple(tokens)
 
     parts = str(name).replace("\\", "/").split("/")
@@ -75,7 +73,19 @@ def rel(path, base):
 
 
 def is_no_space(error):
-    return isinstance(error, OSError) and error.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", None))
+    quota_error = getattr(errno, "EDQUOT", -1)
+    return isinstance(error, OSError) and error.errno in (errno.ENOSPC, quota_error)
+
+
+def resolve_sort(config):
+    """Whether tools should use the configured natural sort order."""
+    return config.get("default_sort", "natural") != "none"
+
+
+def get_poppler_path():
+    """Locate bundled Poppler binaries in a PyInstaller build, if present."""
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    return str(Path(bundle_dir) / "poppler" / "bin") if bundle_dir else None
 
 
 def throttle_if_needed(config, cancel=None):
