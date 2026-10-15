@@ -1,16 +1,16 @@
 """Stable tool IDs and the metadata the interface needs to present each tool."""
 
 from Manager import (
-    folders_to_pdf,
-    images_to_pdf,
+    folders_to_file,
+    images_to_file,
     folder_renamer,
     file_renamer,
     combine_image_sets,
     image_converter,
     find_duplicates,
-    pdf_combiner,
-    pdf_splitter,
-    pdf_to_images,
+    document_combiner,
+    document_splitter,
+    document_to_images,
 )
 
 
@@ -18,13 +18,13 @@ TOOL_REGISTRY = {
     "folders_to_file": {
         "options": ["combine", "individual"],
         "config_key": "default_folders_to_pdf_mode",
-        "handler": folders_to_pdf,
+        "handler": folders_to_file,
         "tip": "Turns image folders into the selected document format: one combined file or one file per folder.",
     },
     "images_to_file": {
         "options": ["combine", "reorder & combine"],
         "config_key": "default_images_to_pdf_mode",
-        "handler": images_to_pdf,
+        "handler": images_to_file,
         "tip": "Combines the images in Input into one file in the selected document format.",
     },
     "folder_renamer": {
@@ -58,18 +58,18 @@ TOOL_REGISTRY = {
     },
     "document_combiner": {
         "options": [],
-        "handler": pdf_combiner,
+        "handler": document_combiner,
         "tip": "Combines PDF and image-based EPUB inputs into one file in the selected document format.",
     },
     "document_splitter": {
         "options": [],
-        "handler": pdf_splitter,
+        "handler": document_splitter,
         "tip": "Splits the selected PDF or image-based EPUB into parts at page ranges you enter.",
     },
     "document_to_images": {
         "options": ["jpg", "png"],
         "config_key": "default_pdf_to_images_fmt",
-        "handler": pdf_to_images,
+        "handler": document_to_images,
         "tip": "Exports page images from PDFs and image-based EPUBs.",
     },
     "add_input": {
