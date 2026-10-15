@@ -9,21 +9,30 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from ManagerConfig import do_auto_clear
+import psutil
+
+from ManagerConfig import get_input
+from Util import (natural_sort_key, rel, fmt_size, total_size, is_no_space, throttle_if_needed,
+                  DOCUMENT_EXTENSIONS, CBZ_IMAGE_EXTENSIONS, ALREADY_COMPRESSED)
+from LogFormat import Section, print_summary
+from ToolNames import folder_format
 
 STAGING_PREFIX = ".tankobon_run_"
 _RUNS = {}
 _RUNS_LOCK = threading.Lock()
-_SUPPORT = {}
+def do_auto_clear(config):
+    if config.get("auto_clear_input"):
+        src = get_input(config)
+        if src.exists():
+            count = sum(1 for _ in src.iterdir())
+            for item in src.iterdir():
+                try:
+                    shutil.rmtree(item) if item.is_dir() else item.unlink()
+                except Exception as e:
+                    print(f"  Auto-clear failed: {item.name}: {e}")
+            print(f"  Input cleared ({count} item(s) removed).")
 
 
-def configure_output_support(**support):
-    """Inject the Manager and Log helpers needed to finalize tool output."""
-    _SUPPORT.update(support)
-
-
-def _helper(name):
-    return _SUPPORT[name]
 
 
 def _remove_path(path):
@@ -52,16 +61,16 @@ def unique_path(path, reserved=None, directory=False, replace=False):
     def key(candidate):
         return os.path.normcase(os.path.abspath(str(candidate))).casefold()
 
-    if replace and not reserved:
-        _remove_path(path)
-        return path
     suffix = "" if directory else path.suffix
     stem = path.name if directory else path.name[:-len(suffix)] if suffix else path.name
     candidate = path
     number = 2
-    while candidate.exists() or candidate.is_symlink() or key(candidate) in reserved:
+    while (key(candidate) in reserved
+           or (not replace and (candidate.exists() or candidate.is_symlink()))):
         candidate = path.with_name(f"{stem} ({number}){suffix}")
         number += 1
+    if replace:
+        _remove_path(candidate)
     reserved.add(key(candidate))
     return candidate
 
@@ -69,6 +78,36 @@ def unique_path(path, reserved=None, directory=False, replace=False):
 def unique_output_stem(parent, name, extension, reserved=None):
     target = unique_path(Path(parent) / f"{name}{extension}", reserved=reserved)
     return target.with_name(target.name[:-len(extension)]) if extension else target
+
+
+def _write_run_marker(stage, named, target=None, preserve=False, cancelled=False):
+    process = psutil.Process(os.getpid())
+    marker = {"named": named, "preserve": preserve, "cancelled": cancelled, "pid": process.pid,
+              "pid_created": process.create_time()}
+    if target is not None:
+        marker["target"] = str(target)
+    (Path(stage) / ".tankobon_run.json").write_text(json.dumps(marker), encoding="utf-8")
+
+
+def _read_run_marker(stage):
+    try:
+        return json.loads((Path(stage) / ".tankobon_run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _process_is_running(pid, created=None):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        process = psutil.Process(pid)
+        if created is not None and abs(process.create_time() - float(created)) > 0.01:
+            return False
+        return process.is_running()
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.AccessDenied:
+        return True
 
 
 def get_output(config, operation, run_name):
@@ -80,6 +119,7 @@ def get_output(config, operation, run_name):
     named = bool(config.get("sort_output", False) or run_name)
     if not named:
         staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=root))
+        _write_run_marker(staging, named=False)
         with _RUNS_LOCK:
             _RUNS[str(staging)] = {
                 "root": root, "operation": operation, "thread": threading.get_ident(),
@@ -93,7 +133,7 @@ def get_output(config, operation, run_name):
     replace = bool(config.get("replace_output", True))
     target = base if replace else unique_path(base, directory=True)
     staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=target.parent))
-    (staging / ".tankobon_run.json").write_text(json.dumps({"named": True}), encoding="utf-8")
+    _write_run_marker(staging, named=True, target=target)
     with _RUNS_LOCK:
         _RUNS[str(staging)] = {
             "root": root, "operation": operation, "thread": threading.get_ident(),
@@ -103,19 +143,12 @@ def get_output(config, operation, run_name):
 
 
 def _archive_mode(config):
-    mode = config.get("zip_compression", "cbz")
+    mode = folder_format(config)
     return mode if mode in ("zip", "cbz") else None
 
 
-def _write_archive(config, files, base, dest_dir, stem, mode, cancel, replace, notes):
-    natural_sort_key = _helper("natural_sort_key")
-    _rel = _helper("_rel")
-    _total_size = _helper("_total_size")
-    _is_no_space = _helper("_is_no_space")
-    throttle_if_needed = _helper("throttle_if_needed")
-    CBZ_IMAGE_EXTENSIONS = _helper("CBZ_IMAGE_EXTENSIONS")
-    _ALREADY_COMPRESSED = _helper("_ALREADY_COMPRESSED")
-    files = sorted(files, key=lambda item: natural_sort_key(_rel(item, base)))
+def _write_archive(config, files, base, dest_dir, stem, mode, cancel, replace, notes, partial_dir):
+    files = sorted(files, key=lambda item: natural_sort_key(rel(item, base)))
     ext = ".zip"
     if mode == "cbz":
         others = sorted({f.suffix.lower() or "(no extension)" for f in files
@@ -125,12 +158,15 @@ def _write_archive(config, files, base, dest_dir, stem, mode, cancel, replace, n
         else:
             ext = ".cbz"
     try:
-        if _total_size(files) > shutil.disk_usage(dest_dir).free:
+        if total_size(files) > shutil.disk_usage(dest_dir).free:
             return ("failed", "not enough free disk space")
     except OSError:
         pass
 
-    partial = Path(dest_dir) / f".tankobon_{threading.get_ident()}.partial"
+    fd, partial_name = tempfile.mkstemp(prefix=".tankobon_archive_", suffix=".partial",
+                                        dir=partial_dir)
+    os.close(fd)
+    partial = Path(partial_name)
     cancelled = False
     try:
         with zipfile.ZipFile(partial, "w", allowZip64=True, strict_timestamps=False) as archive:
@@ -139,8 +175,8 @@ def _write_archive(config, files, base, dest_dir, stem, mode, cancel, replace, n
                     cancelled = True
                     break
                 throttle_if_needed(config, cancel)
-                method = zipfile.ZIP_STORED if item.suffix.lower() in _ALREADY_COMPRESSED else zipfile.ZIP_DEFLATED
-                archive.write(item, _rel(item, base).replace(os.sep, "/"), compress_type=method)
+                method = zipfile.ZIP_STORED if item.suffix.lower() in ALREADY_COMPRESSED else zipfile.ZIP_DEFLATED
+                archive.write(item, rel(item, base).replace(os.sep, "/"), compress_type=method)
         if cancelled:
             partial.unlink(missing_ok=True)
             return ("cancelled",)
@@ -153,29 +189,23 @@ def _write_archive(config, files, base, dest_dir, stem, mode, cancel, replace, n
         return ("ok", final, final.stat().st_size)
     except Exception as error:
         partial.unlink(missing_ok=True)
-        return ("failed", "disk full" if _is_no_space(error) else str(error))
+        return ("failed", "disk full" if is_no_space(error) else str(error))
 
 
 def _place_results(config, src, dest, loose_name, cancel=None):
     """Pack folders and move documents or loose results without archiving the outer output folder."""
-    _Section = _helper("_Section")
-    _fmt_size = _helper("_fmt_size")
-    _print_summary = _helper("_print_summary")
-    natural_sort_key = _helper("natural_sort_key")
-    _rel = _helper("_rel")
-    DOCUMENT_EXTENSIONS = _helper("DOCUMENT_EXTENSIONS")
-    CBZ_IMAGE_EXTENSIONS = _helper("CBZ_IMAGE_EXTENSIONS")
     mode = _archive_mode(config)
     replace = config.get("replace_output", True)
     inplace = Path(src).resolve() == Path(dest).resolve()
     rows, notes, failed = [], [], []
+    reserved_documents = set()
     loose_images, packed, cancelled = [], 0, False
 
     def handle(result, label, source_files_dir=None, source_files=()):
         nonlocal packed, cancelled
         if result[0] == "ok":
             packed += 1
-            rows.append(f"    {label}  →  {result[1].name}  ({_fmt_size(result[2])})")
+            rows.append(f"    {label}  →  {result[1].name}  ({fmt_size(result[2])})")
             if source_files_dir is not None:
                 shutil.rmtree(source_files_dir, ignore_errors=True)
                 if source_files_dir.exists():
@@ -203,12 +233,14 @@ def _place_results(config, src, dest, loose_name, cancel=None):
             break
         try:
             if entry.is_dir() and not entry.is_symlink():
-                if config.get("keep_documents_unarchived", True):
+                if mode and config.get("keep_documents_unarchived", True):
                     documents = sorted((f for f in entry.rglob("*") if f.is_file()
                                         and f.suffix.lower() in DOCUMENT_EXTENSIONS),
-                                       key=lambda f: natural_sort_key(_rel(f, entry)))
+                                       key=lambda f: natural_sort_key(rel(f, entry)))
                     for doc in documents:
-                        shutil.move(str(doc), str(unique_path(Path(dest) / doc.name, replace=replace)))
+                        destination = unique_path(Path(dest) / doc.name, reserved=reserved_documents,
+                                                  replace=replace)
+                        shutil.move(str(doc), str(destination))
                     for folder in sorted((f for f in entry.rglob("*") if f.is_dir()),
                                          key=lambda f: len(f.parts), reverse=True):
                         try:
@@ -220,7 +252,8 @@ def _place_results(config, src, dest, loose_name, cancel=None):
                     if not files:
                         shutil.rmtree(entry, ignore_errors=True)
                         continue
-                    handle(_write_archive(config, files, entry, dest, entry.name, mode, cancel, replace, notes),
+                    handle(_write_archive(config, files, entry, dest, entry.name, mode, cancel,
+                                          replace, notes, src),
                            entry.name, source_files_dir=entry)
                 elif not inplace:
                     if any(entry.iterdir()):
@@ -239,29 +272,40 @@ def _place_results(config, src, dest, loose_name, cancel=None):
             break
 
     if loose_images and mode and not cancelled:
-        handle(_write_archive(config, loose_images, src, dest, loose_name, mode, cancel, replace, notes),
+        handle(_write_archive(config, loose_images, src, dest, loose_name, mode, cancel,
+                              replace, notes, src),
                loose_name, source_files=loose_images)
     if rows:
-        with _Section(config, f"  Archives ({len(rows)})") as section:
+        with Section(config, f"  Archives ({len(rows)})") as section:
             for row in rows:
                 section.add(row)
     for note in notes:
         print(note)
+    cancelled = cancelled or (cancel is not None and cancel.is_set())
     if cancelled:
-        print("  Packing cancelled. The remaining results were saved as they are.")
+        if inplace:
+            print("  Packing cancelled. The named output was not published.")
+        else:
+            print("  Packing cancelled. Completed results were kept in Output; remaining files were swept there.")
     if failed:
-        _print_summary(config, copied=packed, failed=failed, label="archived")
+        print_summary(config, copied=packed, failed=failed, label="archived")
     elif packed:
         print(f"  Saved: {packed} archive(s) → {shown(dest)}")
     if not inplace:
         _sweep(src, dest, replace)
+    return cancelled, bool(failed)
 
 
 def _sweep(src, dest, replace):
     src, dest = Path(src), Path(dest)
     if not src.exists():
         return
+    for partial in src.glob(".tankobon_archive_*.partial"):
+        partial.unlink(missing_ok=True)
     for item in list(src.iterdir()):
+        if item.name == ".tankobon_run.json":
+            item.unlink(missing_ok=True)
+            continue
         try:
             unique = unique_path(dest / item.name, directory=item.is_dir() and not item.is_symlink(), replace=replace)
             shutil.move(str(item), str(unique))
@@ -296,67 +340,145 @@ def _publish_named(stage, record):
             _remove_path(backup)
 
 
-def settle_runs(config):
-    """Finalize abandoned anonymous runs; discard incomplete named stages and retain prior output."""
+def settle_runs(config, cancelled=False):
+    """Keep failed named stages recoverable; discard explicitly cancelled named runs."""
     me = threading.get_ident()
     with _RUNS_LOCK:
         open_runs = [(path, record) for path, record in _RUNS.items()
                      if record["thread"] == me and not record["done"]]
     for path, record in open_runs:
         stage = Path(path)
+        if record.get("preserve"):
+            record["done"] = True
+            continue
         if record.get("named"):
-            shutil.rmtree(stage, ignore_errors=True)
+            has_results = any(item.name != ".tankobon_run.json" for item in stage.iterdir()) if stage.exists() else False
+            if has_results and (cancelled or record.get("cancelled")):
+                shutil.rmtree(stage, ignore_errors=True)
+                print("  Partial named-run results were discarded; the named output was not replaced.")
+            elif has_results:
+                record["preserve"] = True
+                _write_run_marker(stage, named=True, target=record.get("target"), preserve=True)
+                print(f"  Incomplete named-run results were kept at {stage}; the named output was not replaced.")
+            else:
+                shutil.rmtree(stage, ignore_errors=True)
         else:
             _sweep(stage, record["root"], config.get("replace_output", True))
         record["done"] = True
 
 
+def _output_parents(root):
+    """Only stage folders and backups at Output or one operation folder below it."""
+    parents = [Path(root)]
+    try:
+        parents.extend(item for item in Path(root).iterdir() if item.is_dir() and not item.is_symlink())
+    except OSError:
+        pass
+    return parents
+
+
 def recover_stale_runs(config):
-    """Clean leftover hidden stages after a crash without touching completed named output."""
+    """Recover abandoned stages without walking large output trees or touching live runs."""
     output = config.get("output")
     root = Path(output) / "output" if output else None
     if root is None or not root.is_dir():
         return
-    stages = sorted((item for item in root.rglob(f"{STAGING_PREFIX}*") if item.is_dir()),
-                    key=lambda item: len(item.parts), reverse=True)
+    parents = _output_parents(root)
+    stages = []
+    for parent in parents:
+        try:
+            stages.extend(item for item in parent.iterdir()
+                          if item.is_dir() and item.name.startswith(STAGING_PREFIX))
+        except OSError:
+            continue
+
+    busy_targets = set()
     for stage in stages:
-        record = _RUNS.get(str(stage))
-        marker = stage / ".tankobon_run.json"
-        named_stage = bool(record and record.get("named")) or marker.exists()
-        if named_stage:
-            shutil.rmtree(stage, ignore_errors=True)
+        record = _RUNS.get(str(stage), {})
+        marker = _read_run_marker(stage)
+        pid = record.get("pid", marker.get("pid"))
+        created = record.get("pid_created", marker.get("pid_created"))
+        if _process_is_running(pid, created):
+            if marker.get("target"):
+                busy_targets.add(str(Path(marker["target"])))
+            continue
+        if record.get("preserve") or marker.get("preserve"):
+            print(f"  ⚠ An output could not be published and remains staged at {stage}")
+            continue
+        named = record.get("named", marker.get("named", False))
+        if named:
+            if marker.get("cancelled"):
+                shutil.rmtree(stage, ignore_errors=True)
+            elif any(item.name != ".tankobon_run.json" for item in stage.iterdir()):
+                target = record.get("target", marker.get("target"))
+                _write_run_marker(stage, named=True, target=target, preserve=True)
+                print(f"  ⚠ An incomplete named run remains staged at {stage}; the named output was not replaced.")
+            else:
+                shutil.rmtree(stage, ignore_errors=True)
         else:
             _sweep(stage, root, config.get("replace_output", True))
-    # Restore an old named output if the process stopped between its backup and stage rename.
-    for marker in root.rglob(".tankobon_run.json"):
-        marker.unlink(missing_ok=True)
-    for backup in root.rglob(".*.tankobon-backup-*"):
-        if not backup.exists() and not backup.is_symlink():
+
+    # Restore interrupted swaps and clean backup/marker files at the known output depths.
+    for parent in parents:
+        try:
+            entries = list(parent.iterdir())
+        except OSError:
             continue
-        name = backup.name[1:].split(".tankobon-backup-", 1)[0]
-        target = backup.with_name(name)
-        if not target.exists() and not target.is_symlink():
-            os.replace(backup, target)
-        else:
-            _remove_path(backup)
+        for backup in entries:
+            if ".tankobon-backup-" not in backup.name:
+                continue
+            original_name = backup.name[1:].split(".tankobon-backup-", 1)[0]
+            target = backup.with_name(original_name)
+            if str(target) in busy_targets:
+                continue
+            if not target.exists() and not target.is_symlink():
+                os.replace(backup, target)
+            else:
+                _remove_path(backup)
+        for item in entries:
+            if item.is_dir() and not item.name.startswith(STAGING_PREFIX):
+                marker = item / ".tankobon_run.json"
+                if marker.exists() and _read_run_marker(item).get("target") == str(item):
+                    marker.unlink(missing_ok=True)
 
 
 def finalize_output(config, out, cancel=None):
-    """Pack a successful run, then publish its named stage and apply input cleanup."""
+    """Pack and publish a staged run, then apply Input cleanup."""
     out = Path(out)
     with _RUNS_LOCK:
         record = _RUNS.get(str(out))
-    if record is not None and record.get("named"):
-        _place_results(config, out, out, record["operation"], cancel)
-        _publish_named(out, record)
+    if record is None:
+        raise RuntimeError(f"No output staging record exists for {out}")
+    loose_name = Path(record["target"]).name if record.get("named") else record["operation"]
+    cancelled, failed = _place_results(
+        config, out, out if record.get("named") else record["root"], loose_name, cancel)
+    cancelled = cancelled or (cancel is not None and cancel.is_set())
+    if cancelled:
+        record["cancelled"] = True
+        if record.get("named"):
+            _write_run_marker(out, named=True, target=record["target"], cancelled=True)
+        if not record.get("named"):
+            record["done"] = True
+        return False
+    if failed and record.get("named"):
+        record["preserve"] = True
         record["done"] = True
-    elif record is not None:
-        _place_results(config, out, record["root"], record["operation"], cancel)
-        record["done"] = True
-    else:
-        _place_results(config, out, out, out.name, cancel)
+        _write_run_marker(out, named=True, target=record["target"], preserve=True)
+        print(f"  ⚠ Some results could not be packed. The incomplete run remains staged at {out}")
+        return False
+    if record.get("named"):
+        try:
+            _publish_named(out, record)
+        except Exception as error:
+            record["preserve"] = True
+            _write_run_marker(out, named=True, target=record["target"], preserve=True)
+            print(f"  ✖ Could not publish the completed output. It remains staged at {out}")
+            raise RuntimeError(f"Could not publish output; completed files remain at {out}: {error}") from error
+    record["done"] = True
+    if failed:
+        return False
     do_auto_clear(config)
-
+    return True
 
 def shown(out):
     out = Path(out)
