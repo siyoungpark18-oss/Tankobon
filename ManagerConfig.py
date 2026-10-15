@@ -6,6 +6,8 @@ import os
 import shutil
 from pathlib import Path
 
+from ToolNames import DEFAULT_DOCUMENT_FORMAT, DEFAULT_FOLDER_FORMAT
+
 
 CONFIG_PATH = Path.home() / ".tankobon" / "config.json"
 
@@ -51,9 +53,9 @@ DEFAULTS = {
     "preview_limit": 10,
     "show_folder_stats": True,
     "zip_extract_input": True,
-    "default_doc_format": "epub",
+    "default_doc_format": DEFAULT_DOCUMENT_FORMAT,
     "epub_direction": "rtl",
-    "zip_compression": "cbz",
+    "zip_compression": DEFAULT_FOLDER_FORMAT,
     "keep_documents_unarchived": True,
 }
 
@@ -113,19 +115,3 @@ def get_input(config):
     return Path(config["input"]) / "Input"
 
 
-
-def do_auto_clear(config):
-    if config.get("auto_clear_input"):
-        src = get_input(config)
-        if src.exists():
-            count = sum(1 for _ in src.iterdir())
-            for item in src.iterdir():
-                try:
-                    shutil.rmtree(item) if item.is_dir() else item.unlink()
-                except Exception as e:
-                    print(f"  Auto-clear failed: {item.name}: {e}")
-            print(f"  Input cleared ({count} item(s) removed).")
-
-
-def resolve_sort(config):
-    return config.get("default_sort", "natural") != "none"
