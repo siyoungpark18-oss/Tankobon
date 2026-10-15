@@ -1,27 +1,53 @@
-"""Shared display and operation names for format-sensitive tools."""
+"""Canonical production-format choices and format-sensitive tool labels."""
+
+DOCUMENT_FORMATS = ("pdf", "epub")
+FOLDER_FORMATS = ("cbz", "zip", "uncompressed")
+DEFAULT_DOCUMENT_FORMAT = "epub"
+DEFAULT_FOLDER_FORMAT = "cbz"
+
+
+def normalize_document_format(value):
+    return value if value in DOCUMENT_FORMATS else DEFAULT_DOCUMENT_FORMAT
+
+
+def normalize_folder_format(value):
+    if value == "folder":
+        value = "uncompressed"
+    return value if value in FOLDER_FORMATS else DEFAULT_FOLDER_FORMAT
+
+
+def document_format(config):
+    return normalize_document_format(config.get("default_doc_format", DEFAULT_DOCUMENT_FORMAT))
+
+
+def folder_format(config):
+    return normalize_folder_format(config.get("zip_compression", DEFAULT_FOLDER_FORMAT))
+
+
+def document_format_title(value):
+    return normalize_document_format(value).upper()
 
 
 def document_name(config):
-    fmt = config.get("default_doc_format", "epub")
-    return (fmt if fmt in ("pdf", "epub") else "epub").upper()
+    return document_format_title(document_format(config))
 
 
-def folder_format_title(config):
-    return {"zip": "ZIP", "cbz": "CBZ", "uncompressed": "Uncompressed"}.get(
-        config.get("zip_compression", "cbz"), "CBZ")
+def folder_format_title(value):
+    return {"zip": "ZIP", "cbz": "CBZ", "uncompressed": "Uncompressed"}[normalize_folder_format(value)]
 
 
 def folder_tool_name(config, name):
-    if config.get("zip_compression", "cbz") == "uncompressed":
+    fmt = folder_format(config)
+    if fmt == "uncompressed":
         return name
     if name == "Folder Renamer":
-        return f"{folder_format_title(config)} Renamer"
-    return f"{folder_format_title(config)} {name}"
+        return f"{folder_format_title(fmt)} Renamer"
+    return f"{folder_format_title(fmt)} {name}"
 
 
-def tool_label(tool_id, doc_format="epub", folder_format="cbz"):
-    doc = (doc_format if doc_format in ("pdf", "epub") else "epub").upper()
-    folder = {"zip": "ZIP", "cbz": "CBZ", "uncompressed": "Uncompressed"}.get(folder_format, "CBZ")
+def tool_label(tool_id, doc_format=DEFAULT_DOCUMENT_FORMAT, folder_format_value=DEFAULT_FOLDER_FORMAT):
+    doc = document_format_title(doc_format)
+    folder = normalize_folder_format(folder_format_value)
     doc_labels = {
         "folders_to_file": f"Folders to {doc}", "images_to_file": f"Images to {doc}",
         "document_combiner": f"{doc} Combiner", "document_splitter": f"{doc} Splitter",
@@ -34,8 +60,7 @@ def tool_label(tool_id, doc_format="epub", folder_format="cbz"):
         "image_converter": "Image Converter", "find_duplicates": "Find Duplicates",
     }
     if tool_id in folder_labels:
-        if folder_format == "uncompressed":
-            return "Folder Renamer" if tool_id == "folder_renamer" else folder_labels[tool_id]
-        return f"{folder} {folder_labels[tool_id]}"
+        base_name = "Folder Renamer" if tool_id == "folder_renamer" else folder_labels[tool_id]
+        return folder_tool_name({"zip_compression": folder}, base_name)
     return {"file_renamer": "File Renamer", "add_input": "Add Input"}.get(
         tool_id, tool_id.replace("_", " ").title())
