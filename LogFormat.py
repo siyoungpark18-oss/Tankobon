@@ -2,8 +2,7 @@
 
 import sys as _sys
 
-from ManagerConfig import resolve_sort
-from Util import friendly_error, fmt_size, int_cfg, natural_sort_key, rel, total_size
+from Util import friendly_error, fmt_size, int_cfg, natural_sort_key, rel, resolve_sort, total_size
 
 def section_callbacks():
     log = _sys.stdout
