@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 
 from Themes import THEMES
+from ToolNames import DOCUMENT_FORMATS, FOLDER_FORMATS
 from ManagerConfig import save_config
 
 
@@ -303,8 +304,8 @@ def show_preferences(app):
     ]
 
     tools_fields = [
-        ("default_doc_format",          "Default File Production Format", "combo", ["pdf", "epub"]),
-        ("zip_compression",             "Default Folder Production Format", "combo", ["cbz", "zip", "uncompressed"]),
+        ("default_doc_format",          "Default File Production Format", "combo", list(DOCUMENT_FORMATS)),
+        ("zip_compression",             "Default Folder Production Format", "combo", list(FOLDER_FORMATS)),
         ("epub_direction",              "EPUB Reading Direction",         "combo", ["rtl", "ltr"]),
         ("default_folders_to_pdf_mode", "Folders to File: Default Mode",  "combo", ["ask", "combine", "individual"]),
         ("default_images_to_pdf_mode", "Images to File: Default Mode", "combo", ["ask", "combine", "reorder & combine"]),
