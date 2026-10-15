@@ -12,11 +12,13 @@ import traceback
 import webbrowser
 
 #IMPORT FROM MANAGER——————————————————————————————————————————————————————————————————————————————————————
-from Manager import status, SENTINEL, friendly_error
+from Manager import status, SENTINEL
+from Util import friendly_error
 from ManagerConfig import load_config, save_config, get_input, take_config_warning
 from ManagerOutput import settle_runs, recover_stale_runs
 from ToolRegistry import TOOL_REGISTRY, OPTION_LABELS, TOGGLEABLE, UTILITY_TOOLTIPS
-from ToolNames import tool_label
+from ToolNames import (DOCUMENT_FORMATS, FOLDER_FORMATS, normalize_document_format,
+                       normalize_folder_format, document_format_title, folder_format_title, tool_label)
 
 #IMPORT FROM LOG, PREFERENCES AND THEMES—————————————————————————————————————————————————————————————————
 from Log import LogRedirect, input_queue, patch_input, EXPAND, COLLAPSE
@@ -33,14 +35,8 @@ class App:
         self.root.title("Tankobon")
         self.root.resizable(True, True)
         self.config = load_config()
-        self.current_doc_format = self.config.get("default_doc_format", "epub")
-        if self.current_doc_format not in ("pdf", "epub"):
-            self.current_doc_format = "epub"
-        self.current_folder_format = self.config.get("zip_compression", "cbz")
-        if self.current_folder_format == "folder":
-            self.current_folder_format = "uncompressed"
-        if self.current_folder_format not in ("cbz", "zip", "uncompressed"):
-            self.current_folder_format = "cbz"
+        self.current_doc_format = normalize_document_format(self.config.get("default_doc_format"))
+        self.current_folder_format = normalize_folder_format(self.config.get("zip_compression"))
         self.config["zip_compression"] = self.current_folder_format
         self._validate_production_formats()
         self._migrate_legacy_theme_colors()
@@ -703,8 +699,8 @@ class App:
         self._mark_hint(tk.Label(format_row, text="File production:", bg=format_theme["bg"],
                                  fg=format_theme["hint_fg"], font=self._uf())).pack(side='left', padx=(1, 5))
         self._format_buttons = {}
-        for fmt in ("pdf", "epub"):
-            button = tk.Label(format_row, text=fmt.upper(), bg=format_theme["bg"],
+        for fmt in DOCUMENT_FORMATS:
+            button = tk.Label(format_row, text=document_format_title(fmt), bg=format_theme["bg"],
                               fg=format_theme["fg"], font=self._uf(bold=True),
                               cursor="hand2", padx=5, pady=1)
             button.pack(side='left', padx=1)
@@ -720,7 +716,8 @@ class App:
         self._mark_hint(tk.Label(folder_format_row, text="Folder production:", bg=folder_theme["bg"],
                                  fg=folder_theme["hint_fg"], font=self._uf())).pack(side='left', padx=(1, 5))
         self._folder_format_buttons = {}
-        for fmt, label in (("cbz", "CBZ"), ("zip", "ZIP"), ("uncompressed", "Uncompressed")):
+        for fmt in FOLDER_FORMATS:
+            label = folder_format_title(fmt)
             button = tk.Label(folder_format_row, text=label, bg=folder_theme["bg"],
                               fg=folder_theme["fg"], font=self._uf(bold=True),
                               cursor="hand2", padx=4, pady=1)
@@ -804,13 +801,11 @@ class App:
 
     def _validate_production_formats(self):
         """Validate selected formats; labels can change without changing tool identity."""
-        if self.current_doc_format not in ("pdf", "epub"):
-            self.current_doc_format = "epub"
-        if self.current_folder_format not in ("cbz", "zip", "uncompressed"):
-            self.current_folder_format = "cbz"
+        self.current_doc_format = normalize_document_format(self.current_doc_format)
+        self.current_folder_format = normalize_folder_format(self.current_folder_format)
 
     def _set_doc_format(self, fmt):
-        if fmt not in ("pdf", "epub") or fmt == self.current_doc_format:
+        if fmt not in DOCUMENT_FORMATS or fmt == self.current_doc_format:
             return
         self.current_doc_format = fmt
         self._validate_production_formats()
@@ -818,7 +813,7 @@ class App:
         self._update_format_selector()
 
     def _set_folder_format(self, fmt):
-        if fmt not in ("cbz", "zip", "uncompressed") or fmt == self.current_folder_format:
+        if fmt not in FOLDER_FORMATS or fmt == self.current_folder_format:
             return
         self.current_folder_format = fmt
         self._validate_production_formats()
@@ -1088,7 +1083,7 @@ class App:
                 self._report_job_error(job_name, e)
             finally:
                 try:
-                    settle_runs(self.config)      # a tool that stopped early leaves its results in a hidden folder
+                    settle_runs(self.config, cancelled=self.cancel_event.is_set())
                 except Exception:
                     traceback.print_exc()
                 with self._jobs_lock:
