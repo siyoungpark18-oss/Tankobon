@@ -5,3 +5,4 @@ pypdf
 pdf2image
 psutil
 imagehash
+pikepdf==10.12.0
