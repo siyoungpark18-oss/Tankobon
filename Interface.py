@@ -103,7 +103,7 @@ class App:
 
     # ── sidebar text size ─────────────────────────────────────────────────────
 
-    UI_BASE, UI_MIN, UI_MAX = 10, 10, 20
+    UI_BASE, UI_MIN, UI_MAX = 10, 7, 20
     SIDEBAR_BASE_W = 200                    # sidebar width (px) at UI_BASE, before the -/+ buttons
     MIN_LOG_W = 400                         # the window grows rather than squeeze the log below this
 
@@ -115,7 +115,7 @@ class App:
 
     def _uf(self, delta=0, bold=False):
         """Font for sidebar text. delta is relative to the current sidebar size."""
-        size = max(10, self._ui_size + delta)
+        size = max(self.UI_MIN, self._ui_size + delta)
         return ('', size, 'bold') if bold else ('', size)
 
     def _ensure_size(self):
