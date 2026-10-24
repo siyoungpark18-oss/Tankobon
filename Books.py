@@ -4,6 +4,7 @@ import io
 import os
 import posixpath
 import re
+import tempfile
 import uuid
 import zipfile
 import xml.etree.ElementTree as ET
@@ -12,7 +13,7 @@ from pathlib import Path
 from urllib.parse import unquote
 from xml.sax.saxutils import escape as _xml_escape
 
-from PIL import Image
+from PIL import Image, ImageOps
 import img2pdf
 from Util import (EPUB_IMAGE_TYPES, READABLE_EPUB_IMAGES, throttle_if_needed,
                   is_no_space, get_poppler_path)
@@ -208,15 +209,63 @@ def build_epub(config, pages, out_path, title, cancel=None, direction=None):
 def save_book(config, image_paths, stem_path, title=None, cancel=None):
     """Writes the images as <stem_path>.pdf or .epub, depending on Preferences > Tools > Document Format.
     Returns False only if the person cancelled (an EPUB can be cancelled, a PDF can't once it has started)."""
-    if document_format(config) == "pdf":
-        save_pdf(image_paths, stem_path.with_name(stem_path.name + ".pdf"))
-        return True
-    if not image_paths:
-        print("  No images to save.")
-        return True
-    print(f"  Converting {len(image_paths)} images → EPUB...")
-    return build_epub(config, [PathImage(p) for p in image_paths],
-                      stem_path.with_name(stem_path.name + ".epub"), title or stem_path.name, cancel)
+    image_paths = list(image_paths)
+    stem_path = Path(stem_path)
+    temp_dir = None
+    try:
+        if image_paths and config.get("split_wide_pages", True):
+            temp_dir = tempfile.TemporaryDirectory(
+                prefix="tankobon_spreads_", dir=stem_path.parent
+            )
+            image_paths = _split_wide_images(
+                image_paths,
+                Path(temp_dir.name),
+                config.get("epub_direction", "rtl"),
+            )
+
+        if document_format(config) == "pdf":
+            save_pdf(image_paths, stem_path.with_name(stem_path.name + ".pdf"))
+            return True
+        if not image_paths:
+            print("  No images to save.")
+            return True
+        print(f"  Converting {len(image_paths)} images → EPUB...")
+        return build_epub(config, [PathImage(p) for p in image_paths],
+                          stem_path.with_name(stem_path.name + ".epub"), title or stem_path.name, cancel)
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
+
+
+def _split_wide_images(image_paths, temp_dir, direction):
+    """Split unusually wide images at the midpoint into pages in reading order."""
+    direction = direction if direction in ("rtl", "ltr") else "rtl"
+    prepared = []
+    for image_index, image_path in enumerate(image_paths):
+        with Image.open(image_path) as source:
+            image = ImageOps.exif_transpose(source)
+            try:
+                width, height = image.size
+                if width <= height:
+                    prepared.append(image_path)
+                    continue
+
+                middle = width // 2
+                left_box = (0, 0, middle, height)
+                right_box = (middle, 0, width, height)
+                boxes = (right_box, left_box) if direction == "rtl" else (left_box, right_box)
+                for half_index, box in enumerate(boxes):
+                    page_path = temp_dir / f"spread_{image_index:06d}_{half_index:02d}.png"
+                    page = image.crop(box)
+                    try:
+                        page.save(page_path, format="PNG")
+                    finally:
+                        page.close()
+                    prepared.append(page_path)
+            finally:
+                if image is not source:
+                    image.close()
+    return prepared
 
 
 def image_to_pdf_bytes(data):
