@@ -24,7 +24,7 @@ from WorkflowStore import WorkflowStoreError, load_workflows, new_workflow, save
 
 #IMPORT FROM LOG, PREFERENCES AND THEMES—————————————————————————————————————————————————————————————————
 from Log import LogRedirect, input_queue, patch_input, EXPAND, COLLAPSE
-from Preferences import show_preferences
+from Preferences import FlatDropdown, show_preferences
 from Themes import THEMES
 
 #INPUT QUEUE——————————————————————————————————————————————————————————————————————————————————————————————
@@ -283,7 +283,7 @@ class App:
         return widget
 
     def _apply_to_widget(self, widget, t):
-        if isinstance(widget, tk.Toplevel):
+        if isinstance(widget, (tk.Toplevel, FlatDropdown)):
             return
         cls = widget.winfo_class()
         try:
@@ -713,8 +713,11 @@ class App:
         format_row = tk.Frame(left)
         format_row.pack(fill='x', pady=(2, 4))
         format_theme = self._theme()
-        self._mark_hint(tk.Label(format_row, text="File production:", bg=format_theme["bg"],
-                                 fg=format_theme["hint_fg"], font=self._uf())).pack(side='left', padx=(1, 5))
+        self._format_title_lbl = self._mark_hint(tk.Label(
+            format_row, text="File production:", bg=format_theme["bg"],
+            fg=format_theme["hint_fg"], font=self._uf(),
+        ))
+        self._format_title_lbl.pack(side='left', padx=(1, 5))
         self._format_buttons = {}
         for fmt in DOCUMENT_FORMATS:
             button = tk.Label(format_row, text=document_format_title(fmt), bg=format_theme["bg"],
@@ -730,8 +733,11 @@ class App:
         folder_format_row = tk.Frame(left)
         folder_format_row.pack(fill='x', pady=(0, 4))
         folder_theme = self._theme()
-        self._mark_hint(tk.Label(folder_format_row, text="Folder production:", bg=folder_theme["bg"],
-                                 fg=folder_theme["hint_fg"], font=self._uf())).pack(side='left', padx=(1, 5))
+        self._folder_format_title_lbl = self._mark_hint(tk.Label(
+            folder_format_row, text="Folder production:", bg=folder_theme["bg"],
+            fg=folder_theme["hint_fg"], font=self._uf(),
+        ))
+        self._folder_format_title_lbl.pack(side='left', padx=(1, 5))
         self._folder_format_buttons = {}
         for fmt in FOLDER_FORMATS:
             label = folder_format_title(fmt)
@@ -848,13 +854,21 @@ class App:
         if not hasattr(self, "_format_buttons"):
             return
         t = self._theme()
+        for label in (
+            getattr(self, "_format_title_lbl", None),
+            getattr(self, "_folder_format_title_lbl", None),
+        ):
+            if label is not None:
+                label.configure(font=self._uf())
         selected = self.current_doc_format
         for fmt, button in self._format_buttons.items():
             button.configure(bg=t["btn_bg"] if fmt == selected else t["bg"],
-                             fg=t["btn_fg"] if fmt == selected else t["fg"])
+                             fg=t["btn_fg"] if fmt == selected else t["fg"],
+                             font=self._uf(bold=True))
         for fmt, button in getattr(self, "_folder_format_buttons", {}).items():
             button.configure(bg=t["btn_bg"] if fmt == self.current_folder_format else t["bg"],
-                             fg=t["btn_fg"] if fmt == self.current_folder_format else t["fg"])
+                             fg=t["btn_fg"] if fmt == self.current_folder_format else t["fg"],
+                             font=self._uf(bold=True))
 
     def _rebuild_buttons(self):
         self._btn_labels.clear()
@@ -1073,7 +1087,12 @@ class App:
             row=0, column=0, sticky="w", padx=(0, 10), pady=(0, 8)
         )
         name_var = tk.StringVar(dialog, value=working["name"])
-        name_entry = tk.Entry(body, textvariable=name_var, font=self._uf(), width=36)
+        name_entry = tk.Entry(
+            body, textvariable=name_var, font=self._uf(), width=36,
+            bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["entry_fg"],
+            relief="flat", highlightthickness=1,
+            highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"],
+        )
         name_entry.grid(row=0, column=1, sticky="ew", pady=(0, 8))
 
         workflow_format_buttons = {"document": {}, "folder": {}}
@@ -1149,44 +1168,43 @@ class App:
         tool_var = tk.StringVar(dialog, value=tool_labels[tool_ids[0]])
         option_var = tk.StringVar(dialog)
         option_values = {}
-        option_menu = tk.OptionMenu(body, option_var, "No option")
-        option_menu.configure(anchor="w", font=self._uf(), width=30,
-                              bg=t["btn_bg"], fg=t["btn_fg"], activebackground=t["hover"])
-        option_menu["menu"].configure(bg=t["btn_bg"], fg=t["btn_fg"])
+        option_dropdown = None
 
         def set_option_choices(tool_id, selected=None):
+            nonlocal option_dropdown
             entry = self.TOOL_REGISTRY[tool_id]
             options = entry.get("options", []) if entry.get("config_key") else []
-            menu = option_menu["menu"]
-            menu.delete(0, "end")
             option_values.clear()
             if options:
                 choices = [("Use tool preference", None)] + [
                     (self.OPTION_LABELS.get(value, value), value) for value in options
                 ]
-                option_menu.configure(state="normal")
             else:
                 choices = [("No option", None)]
-                option_menu.configure(state="disabled")
             for label, value in choices:
                 option_values[label] = value
-                menu.add_command(label=label, command=lambda text=label: option_var.set(text))
             selected_label = next(
                 (label for label, value in choices if value == selected), choices[0][0]
             )
+            labels = [label for label, _value in choices]
+            if option_dropdown is None:
+                option_dropdown = FlatDropdown(
+                    body, option_var, labels, t, dialog, width=30, appearance="entry"
+                )
+                option_dropdown.grid(row=4, column=1, sticky="ew", pady=4)
+            else:
+                option_dropdown.set_options(labels)
             option_var.set(selected_label)
 
         def select_tool(tool_label):
             tool_id = tool_ids_by_label[tool_label]
             set_option_choices(tool_id)
 
-        tool_menu = tk.OptionMenu(
-            body, tool_var, *(tool_labels[tool_id] for tool_id in tool_ids), command=select_tool
+        tool_dropdown = FlatDropdown(
+            body, tool_var, [tool_labels[tool_id] for tool_id in tool_ids],
+            t, dialog, command=select_tool, width=30, appearance="entry",
         )
-        tool_menu.configure(anchor="w", font=self._uf(), width=30,
-                            bg=t["btn_bg"], fg=t["btn_fg"], activebackground=t["hover"])
-        tool_menu["menu"].configure(bg=t["btn_bg"], fg=t["btn_fg"])
-        tool_menu.grid(row=3, column=1, sticky="ew", pady=4)
+        tool_dropdown.grid(row=3, column=1, sticky="ew", pady=4)
 
         def refresh_workflow_tool_labels():
             current_id = tool_ids_by_label.get(tool_var.get(), tool_ids[0])
@@ -1200,20 +1218,12 @@ class App:
             tool_labels.update(current_tool_labels)
             tool_ids_by_label.clear()
             tool_ids_by_label.update({label: tool_id for tool_id, label in tool_labels.items()})
-            menu = tool_menu["menu"]
-            menu.delete(0, "end")
-            for tool_id in tool_ids:
-                label = tool_labels[tool_id]
-                menu.add_command(
-                    label=label,
-                    command=lambda value=label: (tool_var.set(value), select_tool(value)),
-                )
+            tool_dropdown.set_options([tool_labels[tool_id] for tool_id in tool_ids])
             tool_var.set(tool_labels[current_id])
 
         tk.Label(body, text="Option", bg=t["bg"], fg=t["fg"], font=self._uf()).grid(
             row=4, column=0, sticky="w", padx=(0, 10), pady=4
         )
-        option_menu.grid(row=4, column=1, sticky="ew", pady=4)
         set_option_choices(tool_ids[0])
 
         tk.Label(
@@ -1227,6 +1237,7 @@ class App:
             body, height=8, exportselection=False, selectmode="browse",
             font=self._uf(), bg=t["entry_bg"], fg=t["entry_fg"],
             selectbackground=t["hover"], selectforeground=t["fg"],
+            relief="flat", borderwidth=0, highlightthickness=0,
         )
         step_list.grid(row=6, column=0, columnspan=2, sticky="nsew")
         body.rowconfigure(6, weight=1)
@@ -1302,6 +1313,25 @@ class App:
 
         controls = tk.Frame(body, bg=t["bg"])
         controls.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+
+        def flat_button(parent, text, command):
+            button = tk.Label(
+                parent, text=text, bg=t["bg"], fg=t["fg"], font=self._uf(-1),
+                padx=7, pady=3, cursor="hand2", relief="flat", bd=0,
+            )
+            button.bind("<Button-1>", lambda _event: command())
+            button.bind(
+                "<Enter>", lambda _event, widget=button: widget.configure(
+                    bg=self._theme()["hover"]
+                )
+            )
+            button.bind(
+                "<Leave>", lambda _event, widget=button: widget.configure(
+                    bg=self._theme()["bg"]
+                )
+            )
+            return button
+
         for label, command in (
             ("Add step", add_step),
             ("Update selected", update_step),
@@ -1309,8 +1339,8 @@ class App:
             ("Move up", lambda: move_step(-1)),
             ("Move down", lambda: move_step(1)),
         ):
-            tk.Button(controls, text=label, command=command, font=self._uf(-1)).pack(
-                side="left", padx=(0, 5)
+            flat_button(controls, label, command).pack(
+                side="left", padx=(0, 3), pady=1
             )
 
         refresh_steps()
@@ -1338,12 +1368,8 @@ class App:
             if self._persist_workflows(updated):
                 dialog.destroy()
 
-        tk.Button(footer, text="Cancel", command=dialog.destroy, font=self._uf()).pack(
-            side="right", padx=(6, 0)
-        )
-        tk.Button(footer, text="Save Workflow", command=save_definition, font=self._uf()).pack(
-            side="right"
-        )
+        flat_button(footer, "Cancel", dialog.destroy).pack(side="right", padx=(6, 0))
+        flat_button(footer, "Save Workflow", save_definition).pack(side="right")
         self._apply_to_widget(body, t)
         update_workflow_format_bars()
         name_entry.focus_set()
