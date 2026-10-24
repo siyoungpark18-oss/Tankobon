@@ -11,6 +11,7 @@ from Manager import (
     document_combiner,
     document_splitter,
     document_to_images,
+    epub_metadata,
 )
 
 
@@ -72,6 +73,11 @@ TOOL_REGISTRY = {
         "handler": document_to_images,
         "tip": "Exports page images from PDFs and image-based EPUBs.",
     },
+    "epub_metadata": {
+        "options": [],
+        "handler": epub_metadata,
+        "tip": "Adds metadata to copies of EPUB files in Input. Enter Series and Language once, then a Title for each EPUB; pressing Enter repeats the previous title. A clear chapter number in the filename is stored as its position in the Series.",
+    },
     "add_input": {
         "options": ["files", "folder", "output"],
         "tip": "Copies files or a folder into Input for processing. Zip files are unpacked automatically.",
@@ -110,6 +116,7 @@ TOGGLEABLE = [
     ("show_pdf_combiner", "Folder", "document_combiner"),
     ("show_pdf_splitter", "File", "document_splitter"),
     ("show_pdf_to_images", "File", "document_to_images"),
+    ("show_epub_metadata", "Folder", "epub_metadata"),
 ]
 
 UTILITY_TOOLTIPS = {
