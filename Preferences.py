@@ -110,6 +110,226 @@ class FlatDropdown(tk.Frame):
         menu.tk_popup(self._btn.winfo_rootx(), self._btn.winfo_rooty() + self._btn.winfo_height())
 
 
+def _build_paths_page(app, t, pages, Label, paths, lbl_vals, pick, clear_path, pref_btn, show_tip, hide_tip):
+    # ── PATHS tab ──────────────────────────────────────────────────────────
+    p = pages["Paths"]
+    r = 0
+    Label(p, text="Paths", font=('', 10, 'bold'), bg=t["bg"]).grid(
+        row=r, column=0, columnspan=2, sticky='w', pady=(0, 8))
+    r += 1
+
+    for key, title in (("input", "Input directory"), ("output", "Output directory")):
+        row_f = tk.Frame(p, bg=t["bg"])
+        row_f.grid(row=r, column=0, columnspan=2, sticky='w', pady=(6, 0))
+        Label(row_f, text=title, anchor='w', bg=t["bg"]).pack(side='left')
+        if app.config.get("show_tooltips", True):
+            info = Label(row_f, text="i", bg=t["bg"], fg=t["hint_fg"],
+                            font=('', 10), cursor="hand2", padx=2)
+            info.pack(side='left', padx=(3, 0))
+            info.bind("<Enter>", lambda e, w=info, txt=PATH_TIPS[key]: (
+                w.configure(bg=t["hover"]), show_tip(w, txt)))
+            info.bind("<Leave>", lambda e, w=info: (
+                w.configure(bg=t["bg"]), hide_tip()))
+        r += 1
+        e = tk.Entry(p, width=40, bg=t["entry_bg"], fg=t["entry_fg"], readonlybackground=t["entry_bg"],
+                     insertbackground=t["entry_fg"],
+                     relief='flat', highlightthickness=1,
+                     highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"])
+        e.insert(0, paths[key].get())
+        e.configure(state='readonly')
+        e.grid(row=r, column=0, sticky='w')
+        lbl_vals[key] = e
+        btns = tk.Frame(p, bg=t["bg"])
+        btns.grid(row=r, column=1, padx=(6, 0), sticky='w')
+        pref_btn(btns, "Browse…", lambda k=key: pick(k)).pack(side='left')
+        pref_btn(btns, "Clear", lambda k=key: clear_path(k)).pack(side='left', padx=(2, 0))
+        r += 1
+    return paths
+
+
+def _build_primary_pages(app, t, win, pages, Label, info_btn, check_btn):
+    # ── GENERAL / TOOLS / HOTKEYS / THROTTLE tabs ──────────────────────────
+    general_fields = [
+        ("log_blank_lines",       "Double Space in Log",            "check", None),
+        ("auto_clear_input",      "Clear Input after Operation",    "check", None),
+        ("confirm_clear_input",   "Confirm before Clearing Input",  "check", None),
+        ("confirm_clear_output",  "Confirm before Clearing Output", "check", None),
+        ("ask_run_name",          "Run Name",                       "check", None),
+        ("replace_output",        "Replace Output",                 "check", None),
+        ("guide_empty_input",     "Dim Tools when Input Empty",     "check", None),
+        ("show_tooltips",         "Show Tooltips",                  "check", None),
+        ("log_default_expanded",  "Expand Log Dialogue by Default", "check", None),
+        ("preview_limit",         "Log List Size (0 = all)",        "entry", "10"),
+        ("show_folder_stats",     "Show Folder Counts & Sizes",     "check", None),
+        ("show_timestamps",       "Show Timestamps",                "check", None),
+        ("open_output_recent",    "Open Most Recent Output",        "check", None),
+        ("keep_documents_unarchived", "Write PDFs & EPUBs Directly to Output", "check", None),
+        ("min_free_gb",           "Minimum Free Space",             "combo", ["0","1","2","3","5","10"]),
+    ]
+
+    tools_fields = [
+        ("default_doc_format",          "Default File Production Format", "combo", list(DOCUMENT_FORMATS)),
+        ("zip_compression",             "Default Folder Production Format", "combo", list(FOLDER_FORMATS)),
+        ("epub_direction",              "EPUB Reading Direction",         "combo", ["rtl", "ltr"]),
+        ("default_folders_to_pdf_mode", "Folders to File: Default Mode",  "combo", ["ask", "combine", "individual"]),
+        ("default_images_to_pdf_mode", "Images to File: Default Mode", "combo", ["ask", "combine", "reorder & combine"]),
+        ("default_sort",                "Default Sort Mode",              "combo", ["natural", "none"]),
+        ("default_folder_renamer_mode", "Folder Renamer: Default Mode",  "combo", ["ask", "prefix", "suffix", "replace", "extract number"]),
+        ("default_file_renamer_mode",   "File Renamer: Default Mode",    "combo", ["ask", "prefix", "suffix", "replace", "sequence"]),
+        ("default_img_fmt",             "Image Converter: Default Format","combo", ["ask", "jpg", "png", "webp", "bmp", "tiff"]),
+        ("default_pdf_to_images_fmt",   "PDF to Images: Default Format", "combo", ["ask", "jpg", "png"]),
+        ("default_dedupe_mode",         "Find Duplicates: Default Mode", "combo", ["ask", "keep one copy", "delete all"]),
+        ("default_dedupe_hash",         "Find Duplicates: Hash Method",  "combo", ["exact", "perceptual"]),
+        ("phash_threshold",             "Find Duplicates: Similarity Threshold", "combo", ["0", "2", "4", "6", "8", "10", "12", "16"]),
+        ("zip_extract_input",           "Unpack Zip Files in Input",     "check", None),
+    ]
+
+    advanced_fields = [
+        ("allow_concurrent_jobs", "Concurrent Operations",          "check", None),
+        ("sort_output",           "Sort Output by Operation",       "check", None),
+        ("default_dpi",            "Default DPI (PDF to Images)",     "combo", ["ask","72","96","150","200","300","600"]),
+        ("throttle_cpu", "Max CPU % (0 = off)",    "combo", ["0","50","60","70","80","90"]),
+        ("throttle_mem", "Max Memory % (0 = off)", "combo", ["0","50","60","70","80","90"]),
+    ]
+
+    hotkey_fields = [
+        ("hotkey_continue", "Continue Hotkey", "combo", ["Return","space","Right"]),
+        ("hotkey_cancel",   "Cancel Hotkey",   "combo", ["Escape","space","Left"]),
+    ]
+
+    vars_ = {}
+
+    def build_fields(page, fields, start_row=1):
+        for i, (key, label, typ, opts) in enumerate(fields):
+            row = start_row + i
+            Label(page, text=label, anchor='w', bg=t["bg"], font=('', 10)).grid(
+                row=row, column=0, sticky='w', pady=4, padx=(0, 16))
+            info_btn(page, row, key, PREF_TIPS)
+            if typ == "check":
+                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats", "zip_extract_input", "keep_documents_unarchived", "confirm_clear_output", "ask_run_name") else False
+                v = tk.BooleanVar(value=bool(app.config.get(key, default)))
+                check_btn(page, v).grid(row=row, column=1, sticky='w')
+            elif typ == "entry":
+                v = tk.StringVar(value=str(app.config.get(key, opts)))
+                tk.Entry(page, textvariable=v, width=8, font=('', 10),
+                         bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["entry_fg"],
+                         relief='flat', highlightthickness=1,
+                         highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"]
+                         ).grid(row=row, column=1, sticky='w')
+            else:
+                raw_val = str(app.config.get(key, opts[0]))
+                if raw_val not in opts:
+                    opts = list(opts) + [raw_val]      # keep the real value instead of replacing it
+                v = tk.StringVar(value=raw_val)
+                FlatDropdown(page, v, opts, t, win).grid(row=row, column=1, sticky='w')
+            vars_[key] = v
+
+    p = pages["General"]
+    Label(p, text="General", font=('', 10, 'bold'), bg=t["bg"]).grid(
+        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
+    build_fields(p, general_fields)
+
+    p = pages["Tools"]
+    Label(p, text="Tools", font=('', 10, 'bold'), bg=t["bg"]).grid(
+        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
+    build_fields(p, tools_fields)
+
+    p = pages["Hotkeys"]
+    Label(p, text="Hotkeys", font=('', 10, 'bold'), bg=t["bg"]).grid(
+        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
+    build_fields(p, hotkey_fields)
+    return vars_, advanced_fields, build_fields
+
+
+def _build_buttons_page(app, t, pages, Label, check_btn):
+    # ── BUTTONS tab ────────────────────────────────────────────────────────
+    p = pages["Buttons"]
+    Label(p, text="Visible Buttons", font=('', 10, 'bold'), bg=t["bg"]).grid(
+        row=0, column=0, columnspan=2, sticky='w', pady=(0, 4))
+    Label(p, text="Toggle which tool buttons are visible in the sidebar.", fg=t["hint_fg"],
+             bg=t["bg"], font=('', 10)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
+
+    btn_vars = {}
+    for i, (key, section, tool_id) in enumerate(app.TOGGLEABLE):
+        v = tk.BooleanVar(value=bool(app.config.get(key, True)))
+        Label(p, text=f"{app._tool_label(tool_id)}  ({section})", anchor='w', bg=t["bg"], font=('', 10)).grid(
+            row=i + 2, column=0, sticky='w', pady=3)
+        check_btn(p, v).grid(row=i + 2, column=1, sticky='w')
+        btn_vars[key] = v
+    return btn_vars
+
+
+def _build_themes_page(app, t, pages, Label):
+    # ── THEMES tab ────────────────────────────────────────────────────────
+    p = pages["Themes"]
+    Label(p, text="Themes", font=('', 10, 'bold'), bg=t["bg"]).grid(
+        row=0, column=0, columnspan=4, sticky='w', pady=(0, 4))
+    Label(p, text="Customise colours for light and dark mode. Type a 6-digit hex code.",
+             fg=t["hint_fg"], bg=t["bg"], font=('', 10)).grid(
+        row=1, column=0, columnspan=4, sticky='w', pady=(0, 8))
+
+    theme_vars = {}
+    hex_re = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+    headers = ["Key", "Light", "", "Dark", ""]
+    for col, h in enumerate(headers):
+        Label(p, text=h, font=('', 10, 'bold'), bg=t["bg"], fg=t["hint_fg"]).grid(
+            row=2, column=col, padx=(0 if col == 0 else 4, 0), sticky='w')
+
+    saved_themes = app.config.get("themes", {})
+
+    for i, key in enumerate(THEMES["light"].keys()):
+        row = i + 3
+        Label(p, text=KEY_LABELS.get(key, key), anchor='w', bg=t["bg"], font=('', 10)).grid(
+            row=row, column=0, sticky='w', pady=2, padx=(0, 12))
+
+        for col, mode in ((1, "light"), (3, "dark")):
+            default = THEMES[mode][key]
+            current = saved_themes.get(mode, {}).get(key, default)
+            v = tk.StringVar(value=current)
+            theme_vars.setdefault(mode, {})[key] = v
+
+            e = tk.Entry(p, textvariable=v, width=9, font=('Courier', 10),
+                         bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["entry_fg"],
+                         relief='flat', highlightthickness=1,
+                     highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"])
+            e.grid(row=row, column=col, sticky='w', padx=(0, 2))
+
+            swatch = Label(p, width=2, bg=current, relief='flat')
+            swatch.grid(row=row, column=col + 1, padx=(0, 8))
+
+            def update_swatch(var=v, sw=swatch):
+                val = var.get()
+                if hex_re.match(val):
+                    sw.configure(bg=val)
+
+            v.trace_add("write", lambda *_, var=v, sw=swatch: update_swatch(var, sw))
+
+    def reset_themes():
+        for mode, keys in theme_vars.items():
+            for key, v in keys.items():
+                v.set(THEMES[mode][key])
+
+    bottom_row = len(THEMES["light"].keys()) + 3
+    reset_btn = Label(p, text="Reset to Defaults", bg=t["bg"], fg=t["fg"],
+                         font=('', 10), cursor="hand2", padx=4)
+    reset_btn.grid(row=bottom_row, column=0, columnspan=5, sticky='w', pady=(8, 0))
+    reset_btn.bind("<Button-1>", lambda e: reset_themes())
+    reset_btn.bind("<Enter>", lambda e: reset_btn.configure(bg=t["hover"]))
+    reset_btn.bind("<Leave>", lambda e: reset_btn.configure(bg=t["bg"]))
+    return theme_vars, hex_re
+
+
+def _build_advanced_page(t, pages, Label, build_fields, advanced_fields):
+    p = pages["Advanced"]
+
+    Label(p, text="Advanced", font=('', 10, 'bold'), bg=t["bg"]).grid(
+        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
+    Label(p, text="Limit resource usage during jobs.", fg=t["hint_fg"],
+          bg=t["bg"], font=('', 10)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
+    build_fields(p, advanced_fields, start_row=2)
+
+
 def show_preferences(app):
     existing = getattr(app, "_prefs_win", None)
     if existing is not None and existing.winfo_exists():     # already open: don't open a second copy
@@ -250,210 +470,20 @@ def show_preferences(app):
             info.bind("<Leave>", lambda e, w=info: (
                 w.configure(bg=t["bg"]), _hide_pref_tip()))
 
-    # ── PATHS tab ──────────────────────────────────────────────────────────
-    p = pages["Paths"]
-    r = 0
-    Label(p, text="Paths", font=('', 10, 'bold'), bg=t["bg"]).grid(
-        row=r, column=0, columnspan=2, sticky='w', pady=(0, 8))
-    r += 1
 
-    for key, title in (("input", "Input directory"), ("output", "Output directory")):
-        row_f = tk.Frame(p, bg=t["bg"])
-        row_f.grid(row=r, column=0, columnspan=2, sticky='w', pady=(6, 0))
-        Label(row_f, text=title, anchor='w', bg=t["bg"]).pack(side='left')
-        if app.config.get("show_tooltips", True):
-            info = Label(row_f, text="i", bg=t["bg"], fg=t["hint_fg"],
-                            font=('', 10), cursor="hand2", padx=2)
-            info.pack(side='left', padx=(3, 0))
-            info.bind("<Enter>", lambda e, w=info, txt=PATH_TIPS[key]: (
-                w.configure(bg=t["hover"]), _show_pref_tip(w, txt)))
-            info.bind("<Leave>", lambda e, w=info: (
-                w.configure(bg=t["bg"]), _hide_pref_tip()))
-        r += 1
-        e = tk.Entry(p, width=40, bg=t["entry_bg"], fg=t["entry_fg"], readonlybackground=t["entry_bg"],
-                     insertbackground=t["entry_fg"],
-                     relief='flat', highlightthickness=1,
-                     highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"])
-        e.insert(0, paths[key].get())
-        e.configure(state='readonly')
-        e.grid(row=r, column=0, sticky='w')
-        lbl_vals[key] = e
-        btns = tk.Frame(p, bg=t["bg"])
-        btns.grid(row=r, column=1, padx=(6, 0), sticky='w')
-        _pref_btn(btns, "Browse…", lambda k=key: pick(k)).pack(side='left')
-        _pref_btn(btns, "Clear", lambda k=key: clear_path(k)).pack(side='left', padx=(2, 0))
-        r += 1
+    paths = _build_paths_page(app, t, pages, Label, paths, lbl_vals, pick, clear_path, _pref_btn, _show_pref_tip, _hide_pref_tip)
 
-    # ── GENERAL / TOOLS / HOTKEYS / THROTTLE tabs ──────────────────────────
-    general_fields = [
-        ("log_blank_lines",       "Double Space in Log",            "check", None),
-        ("auto_clear_input",      "Clear Input after Operation",    "check", None),
-        ("confirm_clear_input",   "Confirm before Clearing Input",  "check", None),
-        ("confirm_clear_output",  "Confirm before Clearing Output", "check", None),
-        ("ask_run_name",          "Run Name",                       "check", None),
-        ("replace_output",        "Replace Output",                 "check", None),
-        ("guide_empty_input",     "Dim Tools when Input Empty",     "check", None),
-        ("show_tooltips",         "Show Tooltips",                  "check", None),
-        ("log_default_expanded",  "Expand Log Dialogue by Default", "check", None),
-        ("preview_limit",         "Log List Size (0 = all)",        "entry", "10"),
-        ("show_folder_stats",     "Show Folder Counts & Sizes",     "check", None),
-        ("show_timestamps",       "Show Timestamps",                "check", None),
-        ("open_output_recent",    "Open Most Recent Output",        "check", None),
-        ("keep_documents_unarchived", "Write PDFs & EPUBs Directly to Output", "check", None),
-        ("min_free_gb",           "Minimum Free Space",             "combo", ["0","1","2","3","5","10"]),
-    ]
 
-    tools_fields = [
-        ("default_doc_format",          "Default File Production Format", "combo", list(DOCUMENT_FORMATS)),
-        ("zip_compression",             "Default Folder Production Format", "combo", list(FOLDER_FORMATS)),
-        ("epub_direction",              "EPUB Reading Direction",         "combo", ["rtl", "ltr"]),
-        ("default_folders_to_pdf_mode", "Folders to File: Default Mode",  "combo", ["ask", "combine", "individual"]),
-        ("default_images_to_pdf_mode", "Images to File: Default Mode", "combo", ["ask", "combine", "reorder & combine"]),
-        ("default_sort",                "Default Sort Mode",              "combo", ["natural", "none"]),
-        ("default_folder_renamer_mode", "Folder Renamer: Default Mode",  "combo", ["ask", "prefix", "suffix", "replace", "extract number"]),
-        ("default_file_renamer_mode",   "File Renamer: Default Mode",    "combo", ["ask", "prefix", "suffix", "replace", "sequence"]),
-        ("default_img_fmt",             "Image Converter: Default Format","combo", ["ask", "jpg", "png", "webp", "bmp", "tiff"]),
-        ("default_pdf_to_images_fmt",   "PDF to Images: Default Format", "combo", ["ask", "jpg", "png"]),
-        ("default_dedupe_mode",         "Find Duplicates: Default Mode", "combo", ["ask", "keep one copy", "delete all"]),
-        ("default_dedupe_hash",         "Find Duplicates: Hash Method",  "combo", ["exact", "perceptual"]),
-        ("phash_threshold",             "Find Duplicates: Similarity Threshold", "combo", ["0", "2", "4", "6", "8", "10", "12", "16"]),
-        ("zip_extract_input",           "Unpack Zip Files in Input",     "check", None),
-    ]
+    vars_, advanced_fields, build_fields = _build_primary_pages(app, t, win, pages, Label, _info_btn, _check_btn)
 
-    advanced_fields = [
-        ("allow_concurrent_jobs", "Concurrent Operations",          "check", None),
-        ("sort_output",           "Sort Output by Operation",       "check", None),
-        ("default_dpi",            "Default DPI (PDF to Images)",     "combo", ["ask","72","96","150","200","300","600"]),
-        ("throttle_cpu", "Max CPU % (0 = off)",    "combo", ["0","50","60","70","80","90"]),
-        ("throttle_mem", "Max Memory % (0 = off)", "combo", ["0","50","60","70","80","90"]),
-    ]
 
-    hotkey_fields = [
-        ("hotkey_continue", "Continue Hotkey", "combo", ["Return","space","Right"]),
-        ("hotkey_cancel",   "Cancel Hotkey",   "combo", ["Escape","space","Left"]),
-    ]
+    btn_vars = _build_buttons_page(app, t, pages, Label, _check_btn)
 
-    vars_ = {}
 
-    def build_fields(page, fields, start_row=1):
-        for i, (key, label, typ, opts) in enumerate(fields):
-            row = start_row + i
-            Label(page, text=label, anchor='w', bg=t["bg"], font=('', 10)).grid(
-                row=row, column=0, sticky='w', pady=4, padx=(0, 16))
-            _info_btn(page, row, key, PREF_TIPS)
-            if typ == "check":
-                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats", "zip_extract_input", "keep_documents_unarchived", "confirm_clear_output", "ask_run_name") else False
-                v = tk.BooleanVar(value=bool(app.config.get(key, default)))
-                _check_btn(page, v).grid(row=row, column=1, sticky='w')
-            elif typ == "entry":
-                v = tk.StringVar(value=str(app.config.get(key, opts)))
-                tk.Entry(page, textvariable=v, width=8, font=('', 10),
-                         bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["entry_fg"],
-                         relief='flat', highlightthickness=1,
-                         highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"]
-                         ).grid(row=row, column=1, sticky='w')
-            else:
-                raw_val = str(app.config.get(key, opts[0]))
-                if raw_val not in opts:
-                    opts = list(opts) + [raw_val]      # keep the real value instead of replacing it
-                v = tk.StringVar(value=raw_val)
-                FlatDropdown(page, v, opts, t, win).grid(row=row, column=1, sticky='w')
-            vars_[key] = v
+    theme_vars, hex_re = _build_themes_page(app, t, pages, Label)
 
-    p = pages["General"]
-    Label(p, text="General", font=('', 10, 'bold'), bg=t["bg"]).grid(
-        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
-    build_fields(p, general_fields)
 
-    p = pages["Tools"]
-    Label(p, text="Tools", font=('', 10, 'bold'), bg=t["bg"]).grid(
-        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
-    build_fields(p, tools_fields)
-
-    p = pages["Hotkeys"]
-    Label(p, text="Hotkeys", font=('', 10, 'bold'), bg=t["bg"]).grid(
-        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
-    build_fields(p, hotkey_fields)
-
-    # ── BUTTONS tab ────────────────────────────────────────────────────────
-    p = pages["Buttons"]
-    Label(p, text="Visible Buttons", font=('', 10, 'bold'), bg=t["bg"]).grid(
-        row=0, column=0, columnspan=2, sticky='w', pady=(0, 4))
-    Label(p, text="Toggle which tool buttons are visible in the sidebar.", fg=t["hint_fg"],
-             bg=t["bg"], font=('', 10)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
-
-    btn_vars = {}
-    for i, (key, section, tool_id) in enumerate(app.TOGGLEABLE):
-        v = tk.BooleanVar(value=bool(app.config.get(key, True)))
-        Label(p, text=f"{app._tool_label(tool_id)}  ({section})", anchor='w', bg=t["bg"], font=('', 10)).grid(
-            row=i + 2, column=0, sticky='w', pady=3)
-        _check_btn(p, v).grid(row=i + 2, column=1, sticky='w')
-        btn_vars[key] = v
-
-    # ── THEMES tab ────────────────────────────────────────────────────────
-    p = pages["Themes"]
-    Label(p, text="Themes", font=('', 10, 'bold'), bg=t["bg"]).grid(
-        row=0, column=0, columnspan=4, sticky='w', pady=(0, 4))
-    Label(p, text="Customise colours for light and dark mode. Type a 6-digit hex code.",
-             fg=t["hint_fg"], bg=t["bg"], font=('', 10)).grid(
-        row=1, column=0, columnspan=4, sticky='w', pady=(0, 8))
-
-    theme_vars = {}
-    hex_re = re.compile(r'^#[0-9a-fA-F]{6}$')
-
-    headers = ["Key", "Light", "", "Dark", ""]
-    for col, h in enumerate(headers):
-        Label(p, text=h, font=('', 10, 'bold'), bg=t["bg"], fg=t["hint_fg"]).grid(
-            row=2, column=col, padx=(0 if col == 0 else 4, 0), sticky='w')
-
-    saved_themes = app.config.get("themes", {})
-
-    for i, key in enumerate(THEMES["light"].keys()):
-        row = i + 3
-        Label(p, text=KEY_LABELS.get(key, key), anchor='w', bg=t["bg"], font=('', 10)).grid(
-            row=row, column=0, sticky='w', pady=2, padx=(0, 12))
-
-        for col, mode in ((1, "light"), (3, "dark")):
-            default = THEMES[mode][key]
-            current = saved_themes.get(mode, {}).get(key, default)
-            v = tk.StringVar(value=current)
-            theme_vars.setdefault(mode, {})[key] = v
-
-            e = tk.Entry(p, textvariable=v, width=9, font=('Courier', 10),
-                         bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["entry_fg"],
-                         relief='flat', highlightthickness=1,
-                     highlightbackground=t["entry_bg"], highlightcolor=t["entry_bg"])
-            e.grid(row=row, column=col, sticky='w', padx=(0, 2))
-
-            swatch = Label(p, width=2, bg=current, relief='flat')
-            swatch.grid(row=row, column=col + 1, padx=(0, 8))
-
-            def update_swatch(var=v, sw=swatch):
-                val = var.get()
-                if hex_re.match(val):
-                    sw.configure(bg=val)
-
-            v.trace_add("write", lambda *_, var=v, sw=swatch: update_swatch(var, sw))
-
-    def reset_themes():
-        for mode, keys in theme_vars.items():
-            for key, v in keys.items():
-                v.set(THEMES[mode][key])
-
-    bottom_row = len(THEMES["light"].keys()) + 3
-    reset_btn = Label(p, text="Reset to Defaults", bg=t["bg"], fg=t["fg"],
-                         font=('', 10), cursor="hand2", padx=4)
-    reset_btn.grid(row=bottom_row, column=0, columnspan=5, sticky='w', pady=(8, 0))
-    reset_btn.bind("<Button-1>", lambda e: reset_themes())
-    reset_btn.bind("<Enter>", lambda e: reset_btn.configure(bg=t["hover"]))
-    reset_btn.bind("<Leave>", lambda e: reset_btn.configure(bg=t["bg"]))
-
-    p = pages["Advanced"]
-    Label(p, text="Advanced", font=('', 10, 'bold'), bg=t["bg"]).grid(
-        row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
-    Label(p, text="Limit resource usage during jobs.", fg=t["hint_fg"],
-          bg=t["bg"], font=('', 10)).grid(row=1, column=0, columnspan=2, sticky='w', pady=(0, 8))
-    build_fields(p, advanced_fields, start_row=2)
+    _build_advanced_page(t, pages, Label, build_fields, advanced_fields)
 
     # ── Immediate settings ─────────────────────────────────────────────────
     def _collect_themes(show_warning=False):
