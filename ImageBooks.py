@@ -247,7 +247,12 @@ def folders_to_file(config, cancel=None):
                 else:
                     paths, skipped = collect_image_paths(unit, IMAGE_EXTENSIONS, use_sort=use_sort)
                 total_skipped.extend(skipped)
-                raw_name = f"{folder.name} (loose images)" if unit is folder and subfolders else unit.name
+                if unit is folder and subfolders:
+                    raw_name = f"{folder.name} loose images"
+                elif unit is folder:
+                    raw_name = folder.name
+                else:
+                    raw_name = f"{folder.name} - {unit.name}"
                 safe_name = re.sub(r'[^\w\s\-.]', '', raw_name).strip() or raw_name
                 if paths:
                     safe_name = unique_output_stem(
