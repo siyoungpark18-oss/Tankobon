@@ -54,6 +54,7 @@ DEFAULTS = {
     "show_folder_stats": True,
     "zip_extract_input": True,
     "default_doc_format": DEFAULT_DOCUMENT_FORMAT,
+    "salvage_failed_document_pages": False,
     "epub_direction": "rtl",
     "zip_compression": DEFAULT_FOLDER_FORMAT,
     "keep_documents_unarchived": True,
