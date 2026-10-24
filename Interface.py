@@ -37,15 +37,19 @@ class App:
         self.root.title("Tankobon")
         self.root.resizable(True, True)
         self.config = load_config()
+        self.current_doc_format = normalize_document_format(self.config.get("default_doc_format"))
+        self.current_folder_format = normalize_folder_format(self.config.get("zip_compression"))
+        self.config["default_doc_format"] = self.current_doc_format
+        self.config["zip_compression"] = self.current_folder_format
         self._workflow_load_error = None
         try:
-            self.workflows = load_workflows()
+            self.workflows = load_workflows(
+                default_document_format=self.current_doc_format,
+                default_folder_format=self.current_folder_format,
+            )
         except WorkflowStoreError as error:
             self.workflows = []
             self._workflow_load_error = str(error)
-        self.current_doc_format = normalize_document_format(self.config.get("default_doc_format"))
-        self.current_folder_format = normalize_folder_format(self.config.get("zip_compression"))
-        self.config["zip_compression"] = self.current_folder_format
         self._validate_production_formats()
         self._migrate_legacy_theme_colors()
         self.cancel_event = threading.Event()
@@ -969,6 +973,8 @@ class App:
         snapshot = {
             "id": workflow["id"],
             "name": workflow["name"],
+            "document_format": workflow.get("document_format", self.current_doc_format),
+            "folder_format": workflow.get("folder_format", self.current_folder_format),
             "steps": [dict(step) for step in workflow["steps"]],
         }
         config = self._production_config()
@@ -978,6 +984,13 @@ class App:
             ),
             job_name=snapshot["name"],
             job_id=f"workflow:{snapshot['id']}",
+        )
+
+    def _new_workflow_definition(self):
+        """Start a workflow with the current bars; later edits stay workflow-local."""
+        return new_workflow(
+            document_format=self.current_doc_format,
+            folder_format=self.current_folder_format,
         )
 
     def _persist_workflows(self, workflows):
@@ -992,7 +1005,10 @@ class App:
             return False
         try:
             save_workflows(workflows)
-            self.workflows = load_workflows()
+            self.workflows = load_workflows(
+                default_document_format=self.current_doc_format,
+                default_folder_format=self.current_folder_format,
+            )
         except (WorkflowStoreError, OSError) as error:
             messagebox.showerror(
                 "Could not save workflows",
@@ -1018,12 +1034,18 @@ class App:
     def _edit_workflow(self, workflow=None):
         """Open the ordered-step editor for a new or saved workflow."""
         if workflow is None:
-            working = new_workflow()
+            working = self._new_workflow_definition()
             title = "Create Workflow"
         else:
             working = {
                 "id": workflow["id"],
                 "name": workflow["name"],
+                "document_format": normalize_document_format(
+                    workflow.get("document_format", self.current_doc_format)
+                ),
+                "folder_format": normalize_folder_format(
+                    workflow.get("folder_format", self.current_folder_format)
+                ),
                 "steps": [dict(step) for step in workflow["steps"]],
             }
             title = "Edit Workflow"
@@ -1054,10 +1076,75 @@ class App:
         name_entry = tk.Entry(body, textvariable=name_var, font=self._uf(), width=36)
         name_entry.grid(row=0, column=1, sticky="ew", pady=(0, 8))
 
+        workflow_format_buttons = {"document": {}, "folder": {}}
+
+        def update_workflow_format_bars():
+            current_theme = self._theme()
+            for fmt, button in workflow_format_buttons["document"].items():
+                selected = fmt == working["document_format"]
+                button.configure(
+                    bg=current_theme["btn_bg"] if selected else current_theme["bg"],
+                    fg=current_theme["btn_fg"] if selected else current_theme["fg"],
+                )
+            for fmt, button in workflow_format_buttons["folder"].items():
+                selected = fmt == working["folder_format"]
+                button.configure(
+                    bg=current_theme["btn_bg"] if selected else current_theme["bg"],
+                    fg=current_theme["btn_fg"] if selected else current_theme["fg"],
+                )
+
+        def select_workflow_document_format(fmt):
+            if fmt not in DOCUMENT_FORMATS or fmt == working["document_format"]:
+                return
+            working["document_format"] = fmt
+            update_workflow_format_bars()
+            refresh_workflow_tool_labels()
+            refresh_steps(selected_index())
+
+        def select_workflow_folder_format(fmt):
+            if fmt not in FOLDER_FORMATS or fmt == working["folder_format"]:
+                return
+            working["folder_format"] = fmt
+            update_workflow_format_bars()
+            refresh_workflow_tool_labels()
+            refresh_steps(selected_index())
+
+        for row, title_text, formats, title_for, category, select_format in (
+            (1, "File production:", DOCUMENT_FORMATS, document_format_title,
+             "document", select_workflow_document_format),
+            (2, "Folder production:", FOLDER_FORMATS, folder_format_title,
+             "folder", select_workflow_folder_format),
+        ):
+            format_row = tk.Frame(body, bg=t["bg"])
+            format_row.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 3))
+            self._mark_hint(tk.Label(
+                format_row, text=title_text, bg=t["bg"], fg=t["hint_fg"], font=self._uf()
+            )).pack(side="left", padx=(1, 5))
+            for fmt in formats:
+                button = tk.Label(
+                    format_row, text=title_for(fmt), bg=t["bg"], fg=t["fg"],
+                    font=self._uf(bold=True), cursor="hand2", padx=5, pady=1,
+                )
+                button.pack(side="left", padx=1)
+                button.bind(
+                    "<Button-1>",
+                    lambda _event, value=fmt, callback=select_format: callback(value),
+                )
+                button.bind(
+                    "<Enter>",
+                    lambda _event, widget=button: widget.configure(bg=self._theme()["hover"]),
+                )
+                button.bind("<Leave>", lambda _event: update_workflow_format_bars())
+                workflow_format_buttons[category][fmt] = button
+        update_workflow_format_bars()
+
         tk.Label(body, text="Tool", bg=t["bg"], fg=t["fg"], font=self._uf()).grid(
-            row=1, column=0, sticky="w", padx=(0, 10), pady=4
+            row=3, column=0, sticky="w", padx=(0, 10), pady=4
         )
-        tool_labels = {tool_id: self._tool_label(tool_id) for tool_id in tool_ids}
+        tool_labels = {
+            tool_id: tool_label(tool_id, working["document_format"], working["folder_format"])
+            for tool_id in tool_ids
+        }
         tool_ids_by_label = {label: tool_id for tool_id, label in tool_labels.items()}
         tool_var = tk.StringVar(dialog, value=tool_labels[tool_ids[0]])
         option_var = tk.StringVar(dialog)
@@ -1099,19 +1186,41 @@ class App:
         tool_menu.configure(anchor="w", font=self._uf(), width=30,
                             bg=t["btn_bg"], fg=t["btn_fg"], activebackground=t["hover"])
         tool_menu["menu"].configure(bg=t["btn_bg"], fg=t["btn_fg"])
-        tool_menu.grid(row=1, column=1, sticky="ew", pady=4)
+        tool_menu.grid(row=3, column=1, sticky="ew", pady=4)
+
+        def refresh_workflow_tool_labels():
+            current_id = tool_ids_by_label.get(tool_var.get(), tool_ids[0])
+            current_tool_labels = {
+                tool_id: tool_label(
+                    tool_id, working["document_format"], working["folder_format"]
+                )
+                for tool_id in tool_ids
+            }
+            tool_labels.clear()
+            tool_labels.update(current_tool_labels)
+            tool_ids_by_label.clear()
+            tool_ids_by_label.update({label: tool_id for tool_id, label in tool_labels.items()})
+            menu = tool_menu["menu"]
+            menu.delete(0, "end")
+            for tool_id in tool_ids:
+                label = tool_labels[tool_id]
+                menu.add_command(
+                    label=label,
+                    command=lambda value=label: (tool_var.set(value), select_tool(value)),
+                )
+            tool_var.set(tool_labels[current_id])
 
         tk.Label(body, text="Option", bg=t["bg"], fg=t["fg"], font=self._uf()).grid(
-            row=2, column=0, sticky="w", padx=(0, 10), pady=4
+            row=4, column=0, sticky="w", padx=(0, 10), pady=4
         )
-        option_menu.grid(row=2, column=1, sticky="ew", pady=4)
+        option_menu.grid(row=4, column=1, sticky="ew", pady=4)
         set_option_choices(tool_ids[0])
 
         tk.Label(
             body,
             text="Use tool preference leaves the tool's normal setting or prompt in effect.",
             bg=t["bg"], fg=t["hint_fg"], font=self._uf(-1), anchor="w",
-        ).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 8))
+        ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 8))
 
         steps = [dict(step) for step in working["steps"]]
         step_list = tk.Listbox(
@@ -1119,11 +1228,13 @@ class App:
             font=self._uf(), bg=t["entry_bg"], fg=t["entry_fg"],
             selectbackground=t["hover"], selectforeground=t["fg"],
         )
-        step_list.grid(row=4, column=0, columnspan=2, sticky="nsew")
-        body.rowconfigure(4, weight=1)
+        step_list.grid(row=6, column=0, columnspan=2, sticky="nsew")
+        body.rowconfigure(6, weight=1)
 
         def step_text(index, step):
-            tool_name = self._tool_label(step["tool_id"])
+            tool_name = tool_label(
+                step["tool_id"], working["document_format"], working["folder_format"]
+            )
             option = step.get("option")
             if option is None:
                 option_name = "Use tool preference" if self.TOOL_REGISTRY[step["tool_id"]].get("options") else "No option"
@@ -1190,7 +1301,7 @@ class App:
             refresh_steps(destination)
 
         controls = tk.Frame(body, bg=t["bg"])
-        controls.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        controls.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         for label, command in (
             ("Add step", add_step),
             ("Update selected", update_step),
@@ -1204,12 +1315,14 @@ class App:
 
         refresh_steps()
         footer = tk.Frame(body, bg=t["bg"])
-        footer.grid(row=6, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        footer.grid(row=8, column=0, columnspan=2, sticky="e", pady=(12, 0))
 
         def save_definition():
             definition = {
                 "id": working["id"],
                 "name": name_var.get().strip(),
+                "document_format": working["document_format"],
+                "folder_format": working["folder_format"],
                 "steps": [dict(step) for step in steps],
             }
             updated = [dict(item, steps=[dict(step) for step in item["steps"]])
@@ -1232,6 +1345,7 @@ class App:
             side="right"
         )
         self._apply_to_widget(body, t)
+        update_workflow_format_bars()
         name_entry.focus_set()
         dialog.grab_set()
 
