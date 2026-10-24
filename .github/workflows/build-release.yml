@@ -1,1 +1,94 @@
+name: Build and release Tankobon
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS
+            runner: macos-15-intel
+            script: build.py
+            artifact_name: Tankobon-macOS
+            package_path: Tankobon.dmg
+          - platform: Windows
+            runner: windows-latest
+            script: build.windows.py
+            artifact_name: Tankobon-Windows
+            package_path: Tankobon-Windows.zip
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Build and package
+        run: python ${{ matrix.script }}
+
+      - name: Verify macOS disk image
+        if: matrix.platform == 'macOS'
+        run: |
+          test -s Tankobon.dmg
+          hdiutil verify Tankobon.dmg
+
+      - name: Verify Windows archive
+        if: matrix.platform == 'Windows'
+        run: |
+          python -c "import zipfile; z=zipfile.ZipFile('Tankobon-Windows.zip'); assert 'Tankobon/Tankobon.exe' in z.namelist(), 'Missing Tankobon.exe'; bad=z.testzip(); assert bad is None, f'Corrupt ZIP member: {bad}'"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.package_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release packages
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download both platform packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: Tankobon-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify release packages
+        run: |
+          test -s release-assets/Tankobon.dmg
+          test -s release-assets/Tankobon-Windows.zip
+
+      - name: Attach packages to the GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            release-assets/Tankobon.dmg
+            release-assets/Tankobon-Windows.zip
+          fail_on_unmatched_files: true
 
