@@ -13,6 +13,7 @@ PYTHON_MODULES = (
     "DocumentSplitter.py",
     "DocumentImages.py",
     "DocumentCombiner.py",
+    "MetadataTools.py",
     "RenameRules.py",
     "RenameOperations.py",
     "ToolNames.py",
