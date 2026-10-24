@@ -13,6 +13,7 @@ from Manager import (
     document_to_images,
     epub_metadata,
 )
+from ToolNames import IMAGE_CONVERTER_FORMATS
 
 
 TOOL_REGISTRY = {
@@ -46,10 +47,10 @@ TOOL_REGISTRY = {
         "tip": "Merges multiple folders of images into one flat folder, preserving order.",
     },
     "image_converter": {
-        "options": ["jpg", "png", "webp", "bmp", "tiff"],
+        "options": list(IMAGE_CONVERTER_FORMATS),
         "config_key": "default_img_fmt",
         "handler": image_converter,
-        "tip": "Converts images in Input to a chosen format (JPG, PNG, WebP, and more).",
+        "tip": "Converts images in Input to a chosen format (JPG, PNG, or WebP).",
     },
     "find_duplicates": {
         "options": ["keep one copy", "delete all"],
@@ -95,8 +96,6 @@ OPTION_LABELS = {
     "jpg": "JPG",
     "png": "PNG",
     "webp": "WebP",
-    "bmp": "BMP",
-    "tiff": "TIFF",
     "keep one copy": "Keep one copy",
     "delete all": "Delete all instances",
     "files": "Files",
