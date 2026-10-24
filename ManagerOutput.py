@@ -382,6 +382,39 @@ def _output_parents(root):
     return parents
 
 
+def list_preserved_stages(output_root):
+    """Return recoverable output stages that Status should show to the user."""
+    stages = []
+    for parent in _output_parents(output_root):
+        try:
+            entries = list(parent.iterdir())
+        except OSError:
+            continue
+        for stage in entries:
+            if (not stage.is_dir() or stage.is_symlink()
+                    or not stage.name.startswith(STAGING_PREFIX)):
+                continue
+            marker = _read_run_marker(stage)
+            if not marker.get("preserve"):
+                continue
+
+            files = []
+            try:
+                for item in stage.rglob("*"):
+                    if item.name != ".tankobon_run.json" and item.is_file():
+                        files.append(item)
+            except OSError:
+                # Still expose the stage location if part of its contents is unreadable.
+                pass
+            stages.append({
+                "path": stage,
+                "target": marker.get("target"),
+                "file_count": len(files),
+                "size_bytes": total_size(files),
+            })
+    return sorted(stages, key=lambda item: natural_sort_key(str(item["path"])))
+
+
 def recover_stale_runs(config):
     """Recover abandoned stages without walking large output trees or touching live runs."""
     output = config.get("output")
