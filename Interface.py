@@ -135,6 +135,10 @@ class App:
         size = max(self.UI_MIN, self._ui_size + delta)
         return ('', size, 'bold') if bold else ('', size)
 
+    def _ui_px(self, value):
+        """Scale sidebar spacing and hit areas with its text size."""
+        return max(1, round(value * self._ui_size / self.UI_BASE))
+
     def _ensure_size(self):
         """Grow the window (never shrink it) so nothing in the sidebar is cut off and the log keeps room."""
         if not self.root.winfo_ismapped():
@@ -178,6 +182,11 @@ class App:
         extra = sum(b.winfo_reqwidth() + 4 for b in self._size_btns)        # +4 = their padding
         width = max(round(self.SIDEBAR_BASE_W * s / self.UI_BASE),
                     self._btn_frame.winfo_reqwidth() + round(22 * s / self.UI_BASE)) + extra
+        production_width = max(
+            self._format_row.winfo_reqwidth(),
+            self._folder_format_row.winfo_reqwidth(),
+        ) + round(4 * s / self.UI_BASE)
+        width = max(width, production_width)
         width = max(width, self._title_row.winfo_reqwidth() + 4)
         self._left.configure(width=width)
         self._ensure_size()
@@ -711,19 +720,23 @@ class App:
         self._size_dark_btn()
 
         format_row = tk.Frame(left)
+        self._format_row = format_row
         format_row.pack(fill='x', pady=(2, 4))
         format_theme = self._theme()
         self._format_title_lbl = self._mark_hint(tk.Label(
             format_row, text="File production:", bg=format_theme["bg"],
             fg=format_theme["hint_fg"], font=self._uf(),
         ))
-        self._format_title_lbl.pack(side='left', padx=(1, 5))
+        self._format_title_lbl.pack(
+            side='left', padx=(self._ui_px(1), self._ui_px(5))
+        )
         self._format_buttons = {}
         for fmt in DOCUMENT_FORMATS:
             button = tk.Label(format_row, text=document_format_title(fmt), bg=format_theme["bg"],
                               fg=format_theme["fg"], font=self._uf(bold=True),
-                              cursor="hand2", padx=5, pady=1)
-            button.pack(side='left', padx=1)
+                              cursor="hand2", padx=self._ui_px(5),
+                              pady=self._ui_px(1))
+            button.pack(side='left', padx=self._ui_px(1))
             button.bind("<Button-1>", lambda e, f=fmt: self._set_doc_format(f))
             button.bind("<Enter>", lambda e, b=button: b.configure(bg=self._theme()["hover"]))
             button.bind("<Leave>", lambda e, b=button: self._update_format_selector())
@@ -731,20 +744,24 @@ class App:
         self._update_format_selector()
 
         folder_format_row = tk.Frame(left)
+        self._folder_format_row = folder_format_row
         folder_format_row.pack(fill='x', pady=(0, 4))
         folder_theme = self._theme()
         self._folder_format_title_lbl = self._mark_hint(tk.Label(
             folder_format_row, text="Folder production:", bg=folder_theme["bg"],
             fg=folder_theme["hint_fg"], font=self._uf(),
         ))
-        self._folder_format_title_lbl.pack(side='left', padx=(1, 5))
+        self._folder_format_title_lbl.pack(
+            side='left', padx=(self._ui_px(1), self._ui_px(5))
+        )
         self._folder_format_buttons = {}
         for fmt in FOLDER_FORMATS:
             label = folder_format_title(fmt)
             button = tk.Label(folder_format_row, text=label, bg=folder_theme["bg"],
                               fg=folder_theme["fg"], font=self._uf(bold=True),
-                              cursor="hand2", padx=4, pady=1)
-            button.pack(side='left', padx=1)
+                              cursor="hand2", padx=self._ui_px(4),
+                              pady=self._ui_px(1))
+            button.pack(side='left', padx=self._ui_px(1))
             button.bind("<Button-1>", lambda e, f=fmt: self._set_folder_format(f))
             button.bind("<Enter>", lambda e, b=button: b.configure(bg=self._theme()["hover"]))
             button.bind("<Leave>", lambda e, b=button: self._update_format_selector())
@@ -860,15 +877,20 @@ class App:
         ):
             if label is not None:
                 label.configure(font=self._uf())
+                label.pack_configure(padx=(self._ui_px(1), self._ui_px(5)))
         selected = self.current_doc_format
         for fmt, button in self._format_buttons.items():
             button.configure(bg=t["btn_bg"] if fmt == selected else t["bg"],
                              fg=t["btn_fg"] if fmt == selected else t["fg"],
-                             font=self._uf(bold=True))
+                             font=self._uf(bold=True),
+                             padx=self._ui_px(5), pady=self._ui_px(1))
+            button.pack_configure(padx=self._ui_px(1))
         for fmt, button in getattr(self, "_folder_format_buttons", {}).items():
             button.configure(bg=t["btn_bg"] if fmt == self.current_folder_format else t["bg"],
                              fg=t["btn_fg"] if fmt == self.current_folder_format else t["fg"],
-                             font=self._uf(bold=True))
+                             font=self._uf(bold=True),
+                             padx=self._ui_px(4), pady=self._ui_px(1))
+            button.pack_configure(padx=self._ui_px(1))
 
     def _rebuild_buttons(self):
         self._btn_labels.clear()
