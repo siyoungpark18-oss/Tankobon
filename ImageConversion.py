@@ -10,7 +10,7 @@ from LogFormat import log_scan, print_summary, size_suffix
 from ManagerConfig import get_input
 from ManagerOutput import finalize_output, get_output, shown, unique_path
 from ManagerSupport import SENTINEL, _cancel, _check_disk_space, _get_run_name
-from ToolNames import folder_tool_name
+from ToolNames import IMAGE_CONVERTER_FORMATS, folder_tool_name
 from Util import (
     is_no_space,
     natural_sort_key,
@@ -34,12 +34,12 @@ def image_converter(config, cancel=None):
 
     fmt = config.get("default_img_fmt", "ask")
     if fmt == "ask":
-        raw = input("Format (jpg/png/webp/bmp/tiff, default jpg): ").strip()
+        raw = input("Format (jpg/png/webp, default jpg): ").strip()
         if raw == SENTINEL:                      # must be checked BEFORE .lower(), which changes the text
             return _cancel()
         fmt = raw.lower() or "jpg"
     fmt = {"jpeg": "jpg", "tif": "tiff"}.get(fmt, fmt)
-    if fmt not in ("jpg", "png", "webp", "bmp", "tiff"):
+    if fmt not in IMAGE_CONVERTER_FORMATS:
         print(f"  ⚠ Unknown format '{fmt}'. Using the default (jpg).")
         fmt = "jpg"
     print(f"  Format: {fmt}")
