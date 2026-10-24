@@ -29,6 +29,7 @@ PREF_TIPS = {
     "open_output_recent":         "When enabled, the Open Output button opens the most recent output rather than the entire Output folder.\n Useful for jumping straight to your latest result.",
     "min_free_gb":                "The Minimum Storage Requirement to begin an Operation in GB.\n The program will usually warn you of low storage before this.",
     "default_doc_format":         "The format selected when Tankobon starts. The PDF/EPUB selector in the main interface changes the current session only; use this setting to change the startup default. An EPUB is one multi-page book. In Individual mode, each folder becomes one book with images as its pages; Combine makes one book from all folders. EPUB output from a PDF renders its pages as images, which can take longer and need extra space.",
+    "salvage_failed_document_pages": "By default, a PDF or EPUB that cannot be read completely contributes no pages to the combined book. Turn this on to keep readable pages from that document and skip only pages that fail.",
     "epub_direction":             "Reading direction of the EPUBs Tankobon writes. RTL (right to left) is how manga is read.\n It only changes the page-turn direction; the pages stay in the order they were processed.",
     "default_folders_to_pdf_mode":"The 'Combine' option makes one PDF or EPUB book from all folders. The 'Individual' option makes one book per folder. In an EPUB, each image is a page in that book.",
     "default_sort":               "Controls the Order files are processed in.\n Natural mode reads numbers in names as numbers.\n So 'chapter 2' comes before 'chapter 10' (a plain alphabetical sort would put 10 first).\n\n 'None' simply uses your filesystem order.",
@@ -169,6 +170,7 @@ def _build_primary_pages(app, t, win, pages, Label, info_btn, check_btn):
 
     tools_fields = [
         ("default_doc_format",          "Default File Production Format", "combo", list(DOCUMENT_FORMATS)),
+        ("salvage_failed_document_pages", "Document Combiner: Salvage Readable Pages", "check", None),
         ("zip_compression",             "Default Folder Production Format", "combo", list(FOLDER_FORMATS)),
         ("epub_direction",              "EPUB Reading Direction",         "combo", ["rtl", "ltr"]),
         ("default_folders_to_pdf_mode", "Folders to File: Default Mode",  "combo", ["ask", "combine", "individual"]),
