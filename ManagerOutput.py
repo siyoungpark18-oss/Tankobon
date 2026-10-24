@@ -54,7 +54,12 @@ def validate_run_name(run_name):
 
 
 def unique_path(path, reserved=None, directory=False, replace=False):
-    """Return one shared collision-safe output path, optionally replacing an existing item."""
+    """Choose a distinct path for this run, optionally replacing its previous output.
+
+    Names reserved by earlier items in the current run receive numbered suffixes. In
+    replace mode, an existing file at the selected name is replaced too, so a rerun
+    with duplicate input names reuses the same base and numbered output names.
+    """
     path = Path(path)
     reserved = reserved if reserved is not None else set()
 
@@ -442,6 +447,26 @@ def recover_stale_runs(config):
                     marker.unlink(missing_ok=True)
 
 
+def _has_staged_results(stage, config, record):
+    """Check whether a run contains an output item, ignoring its marker and empty setup folders."""
+    stage = Path(stage)
+    for item in stage.rglob("*"):
+        if item.name == ".tankobon_run.json":
+            continue
+        if item.is_file() or item.is_symlink():
+            return True
+
+    # In uncompressed mode, the folder renamer can produce a meaningful folder tree
+    # with only empty child folders. Other tools create empty directories as setup
+    # before writing files, so those directories alone are not results.
+    operation = str(record.get("operation", "")).casefold()
+    if _archive_mode(config) is None and "renamer" in operation:
+        for item in stage.iterdir():
+            if item.is_dir() and not item.is_symlink() and next(item.iterdir(), None) is not None:
+                return True
+    return False
+
+
 def finalize_output(config, out, cancel=None):
     """Pack and publish a staged run, then apply Input cleanup."""
     out = Path(out)
@@ -449,6 +474,14 @@ def finalize_output(config, out, cancel=None):
         record = _RUNS.get(str(out))
     if record is None:
         raise RuntimeError(f"No output staging record exists for {out}")
+    if not (cancel is not None and cancel.is_set()) and not _has_staged_results(out, config, record):
+        try:
+            shutil.rmtree(out)
+        except OSError as error:
+            print(f"  ⚠ No results were produced, but the staging folder remains at {out}: {error}")
+        record["done"] = True
+        print("  No results were produced; output was left unchanged and Input was not cleared.")
+        return False
     loose_name = Path(record["target"]).name if record.get("named") else record["operation"]
     cancelled, failed = _place_results(
         config, out, out if record.get("named") else record["root"], loose_name, cancel)
