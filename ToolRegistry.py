@@ -59,7 +59,7 @@ TOOL_REGISTRY = {
     "document_combiner": {
         "options": [],
         "handler": document_combiner,
-        "tip": "Combines PDF and image-based EPUB inputs into one file in the selected document format.",
+        "tip": "Combines PDF and image-based EPUB inputs into one file in the selected document format. A document that fails to read completely is omitted by default; enable page salvage in Preferences > Tools to keep its readable pages.",
     },
     "document_splitter": {
         "options": [],
