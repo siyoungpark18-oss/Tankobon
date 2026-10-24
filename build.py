@@ -7,6 +7,7 @@ import subprocess
 import sys
 import shutil
 from pathlib import Path
+from BuildManifest import PYTHON_MODULES
 
 APP_NAME    = "Tankobon"
 MAIN_SCRIPT = "Interface.py"
@@ -239,10 +240,8 @@ def prepare_poppler_mac():
 def build_app():
     print("Building .app with PyInstaller...")
 
-    source_files = ["Manager.py", "ManagerConfig.py", "ManagerOutput.py", "ToolNames.py", "ToolRegistry.py", "Util.py", "LogFormat.py", "Archives.py", "Books.py", "Log.py", "Preferences.py", "Themes.py"]
-
     add_data_args = []
-    for f in source_files:
+    for f in PYTHON_MODULES:
         add_data_args += ["--add-data", f"{f}:."]
     add_data_args += ["--add-data", "assets:assets"]
     add_data_args += ["--add-data", "poppler/bin:poppler/bin"]
