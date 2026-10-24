@@ -16,6 +16,8 @@ PYTHON_MODULES = (
     "MetadataTools.py",
     "RenameRules.py",
     "RenameOperations.py",
+    "WorkflowStore.py",
+    "WorkflowRunner.py",
     "ToolNames.py",
     "ToolRegistry.py",
     "Util.py",
