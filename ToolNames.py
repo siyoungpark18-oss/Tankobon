@@ -2,6 +2,7 @@
 
 DOCUMENT_FORMATS = ("pdf", "epub")
 FOLDER_FORMATS = ("cbz", "zip", "uncompressed")
+IMAGE_CONVERTER_FORMATS = ("jpg", "png", "webp")
 DEFAULT_DOCUMENT_FORMAT = "epub"
 DEFAULT_FOLDER_FORMAT = "cbz"
 
