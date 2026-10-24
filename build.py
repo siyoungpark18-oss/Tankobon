@@ -39,6 +39,8 @@ img2pdf
 pypdf
 pdf2image
 psutil
+imagehash
+pikepdf==10.12.0
 """
 
 def ensure_requirements():
