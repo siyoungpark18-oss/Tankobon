@@ -25,6 +25,7 @@ from ImageBooks import folders_to_file as _folders_to_file, images_to_file as _i
 from DocumentSplitter import document_splitter as _document_splitter
 from DocumentImages import document_to_images as _document_to_images
 from DocumentCombiner import document_combiner as _document_combiner
+from MetadataTools import epub_metadata as _epub_metadata
 from ManagerOutput import (
     get_output, finalize_output, shown, unique_path, unique_output_stem,
 )
@@ -73,6 +74,10 @@ def document_to_images(config, cancel=None):
 
 def document_splitter(config, cancel=None):
     return _document_splitter(config, cancel)
+
+
+def epub_metadata(config, cancel=None):
+    return _epub_metadata(config, cancel)
 
 
 def status(config):
