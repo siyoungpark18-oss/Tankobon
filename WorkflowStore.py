@@ -8,6 +8,14 @@ from pathlib import Path
 
 from ManagerConfig import CONFIG_PATH
 from ManagerOutput import validate_run_name
+from ToolNames import (
+    DEFAULT_DOCUMENT_FORMAT,
+    DEFAULT_FOLDER_FORMAT,
+    DOCUMENT_FORMATS,
+    FOLDER_FORMATS,
+    normalize_document_format,
+    normalize_folder_format,
+)
 
 
 WORKFLOW_FORMAT_VERSION = 1
@@ -18,11 +26,16 @@ class WorkflowStoreError(ValueError):
     """A saved workflow file or definition is invalid."""
 
 
-def new_workflow(name="", steps=None):
+def new_workflow(
+    name="", steps=None, document_format=DEFAULT_DOCUMENT_FORMAT,
+    folder_format=DEFAULT_FOLDER_FORMAT,
+):
     """Create an unsaved workflow definition with a stable ID."""
     return {
         "id": uuid.uuid4().hex,
         "name": str(name).strip(),
+        "document_format": normalize_document_format(document_format),
+        "folder_format": normalize_folder_format(folder_format),
         "steps": list(steps or []),
     }
 
@@ -34,7 +47,10 @@ def _get_registry(registry):
     return TOOL_REGISTRY
 
 
-def validate_workflows(workflows, registry=None):
+def validate_workflows(
+    workflows, registry=None, default_document_format=DEFAULT_DOCUMENT_FORMAT,
+    default_folder_format=DEFAULT_FOLDER_FORMAT,
+):
     """Return clean workflow dictionaries or raise with a specific validation error."""
     registry = _get_registry(registry)
     if not isinstance(workflows, list):
@@ -45,8 +61,19 @@ def validate_workflows(workflows, registry=None):
         prefix = f"Workflow {workflow_index}"
         if not isinstance(workflow, dict):
             raise WorkflowStoreError(f"{prefix} must be an object.")
-        if set(workflow) - {"id", "name", "steps"}:
+        if set(workflow) - {"id", "name", "document_format", "folder_format", "steps"}:
             raise WorkflowStoreError(f"{prefix} contains unsupported fields.")
+
+        document_format = workflow.get(
+            "document_format", normalize_document_format(default_document_format)
+        )
+        folder_format = workflow.get(
+            "folder_format", normalize_folder_format(default_folder_format)
+        )
+        if document_format not in DOCUMENT_FORMATS:
+            raise WorkflowStoreError(f"{prefix} has an invalid document format.")
+        if folder_format not in FOLDER_FORMATS:
+            raise WorkflowStoreError(f"{prefix} has an invalid folder format.")
 
         workflow_id = workflow.get("id")
         if not isinstance(workflow_id, str) or not workflow_id.strip():
@@ -90,11 +117,20 @@ def validate_workflows(workflows, registry=None):
                 raise WorkflowStoreError(f"{step_prefix} does not support a saved option.")
             clean_steps.append({"tool_id": tool_id, "option": option})
 
-        validated.append({"id": workflow_id, "name": name, "steps": clean_steps})
+        validated.append({
+            "id": workflow_id,
+            "name": name,
+            "document_format": document_format,
+            "folder_format": folder_format,
+            "steps": clean_steps,
+        })
     return validated
 
 
-def load_workflows(path=None, registry=None):
+def load_workflows(
+    path=None, registry=None, default_document_format=DEFAULT_DOCUMENT_FORMAT,
+    default_folder_format=DEFAULT_FOLDER_FORMAT,
+):
     """Load workflow definitions; a missing file is a normal empty state."""
     path = Path(path) if path is not None else WORKFLOWS_PATH
     if not path.exists():
@@ -107,7 +143,11 @@ def load_workflows(path=None, registry=None):
         raise WorkflowStoreError("The saved workflow file has an unsupported format version.")
     if "workflows" not in data:
         raise WorkflowStoreError("The saved workflow file is missing its workflow list.")
-    return validate_workflows(data["workflows"], registry=registry)
+    return validate_workflows(
+        data["workflows"], registry=registry,
+        default_document_format=default_document_format,
+        default_folder_format=default_folder_format,
+    )
 
 
 def save_workflows(workflows, path=None, registry=None):
