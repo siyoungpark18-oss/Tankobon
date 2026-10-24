@@ -12,6 +12,7 @@ APP_NAME    = "Tankobon"
 MAIN_SCRIPT = "Interface.py"
 DIST        = Path("dist")
 APP_DIR     = DIST / APP_NAME
+WINDOWS_ZIP = Path("Tankobon-Windows.zip")
 POPPLER_SRC = Path("poppler")
 
 POPPLER_RELEASES_API = "https://api.github.com/repos/oschwartz10612/poppler-windows/releases/latest"
@@ -24,6 +25,11 @@ def run(cmd):
 
 def clean():
     print("Cleaning previous build artifacts...")
+    if WINDOWS_ZIP.exists():
+        WINDOWS_ZIP.unlink()
+        print(f"  Removed {WINDOWS_ZIP}")
+    partial_zip = WINDOWS_ZIP.with_name(f".{WINDOWS_ZIP.name}.partial")
+    partial_zip.unlink(missing_ok=True)
     for folder in ["build", "dist", "__pycache__"]:
         if Path(folder).exists():
             shutil.rmtree(folder)
@@ -87,6 +93,8 @@ img2pdf
 pypdf
 pdf2image
 psutil
+imagehash
+pikepdf==10.12.0
 """
 
 def ensure_requirements():
@@ -116,7 +124,6 @@ def build_app():
         "--onedir",
         "--name", APP_NAME,
         "--icon", "assets/icon.ico",
-        "--icon", "assets/icon.ico",
         "--hidden-import", "psutil",
         "--hidden-import", "pdf2image",
         "--hidden-import", "PIL._tkinter_finder",
@@ -127,14 +134,49 @@ def build_app():
     print(f"\nBuild output: {APP_DIR}")
 
 
+def package_windows():
+    """Create and verify a ZIP containing the complete one-folder Windows app."""
+    executable = APP_DIR / f"{APP_NAME}.exe"
+    if not executable.is_file():
+        raise FileNotFoundError(f"Windows app executable was not built: {executable}")
+
+    partial_zip = WINDOWS_ZIP.with_name(f".{WINDOWS_ZIP.name}.partial")
+    partial_zip.unlink(missing_ok=True)
+    try:
+        with zipfile.ZipFile(partial_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(APP_DIR.rglob("*")):
+                if path.is_file():
+                    archive.write(path, Path(APP_NAME) / path.relative_to(APP_DIR))
+
+        with zipfile.ZipFile(partial_zip) as archive:
+            corrupt_member = archive.testzip()
+            if corrupt_member is not None:
+                raise RuntimeError(f"Windows ZIP failed integrity check at {corrupt_member}")
+
+        partial_zip.replace(WINDOWS_ZIP)
+    finally:
+        partial_zip.unlink(missing_ok=True)
+
+    print(f"\nWindows package created and verified: {WINDOWS_ZIP}")
+
+
 if __name__ == "__main__":
     try:
-        clean()
-        prepare_poppler_windows()
-        install_dependencies()
-        build_app()
-        print(f"\nDone! Distribute the folder: dist/{APP_NAME}/")
-        print(f"  Run with: dist/{APP_NAME}/{APP_NAME}.exe")
+        build_only = "--build-only" in sys.argv
+        package_only = "--package-only" in sys.argv
+        if build_only and package_only:
+            raise ValueError("Use either --build-only or --package-only, not both.")
+
+        if package_only:
+            package_windows()
+        else:
+            clean()
+            prepare_poppler_windows()
+            install_dependencies()
+            build_app()
+            if not build_only:
+                package_windows()
+            print(f"\nDone! Build output: {APP_DIR}")
     except subprocess.CalledProcessError as e:
         print(f"\nBuild failed: {e}")
         sys.exit(1)
