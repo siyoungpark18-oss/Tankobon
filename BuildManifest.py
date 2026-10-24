@@ -1,4 +1,4 @@
-
+\
 PYTHON_MODULES = (
     "Manager.py",
     "ManagerConfig.py",
