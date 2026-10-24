@@ -42,6 +42,17 @@ jobs:
 
       - name: Build and package
         run: python ${{ matrix.script }}
+      - name: Build macOS package
+        if: matrix.platform == 'macOS'
+        run: python build.py
+
+      - name: Build Windows app
+        if: matrix.platform == 'Windows'
+        run: python build.windows.py --build-only
+
+      - name: Package Windows ZIP
+        if: matrix.platform == 'Windows'
+        run: python build.windows.py --package-only
 
       - name: Verify macOS disk image
         if: matrix.platform == 'macOS'
