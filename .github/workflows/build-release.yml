@@ -91,4 +91,3 @@ jobs:
             release-assets/Tankobon.dmg
             release-assets/Tankobon-Windows.zip
           fail_on_unmatched_files: true
-
