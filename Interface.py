@@ -19,6 +19,8 @@ from ManagerOutput import settle_runs, recover_stale_runs
 from ToolRegistry import TOOL_REGISTRY, OPTION_LABELS, TOGGLEABLE, UTILITY_TOOLTIPS
 from ToolNames import (DOCUMENT_FORMATS, FOLDER_FORMATS, normalize_document_format,
                        normalize_folder_format, document_format_title, folder_format_title, tool_label)
+from WorkflowRunner import run_workflow
+from WorkflowStore import WorkflowStoreError, load_workflows, new_workflow, save_workflows
 
 #IMPORT FROM LOG, PREFERENCES AND THEMES—————————————————————————————————————————————————————————————————
 from Log import LogRedirect, input_queue, patch_input, EXPAND, COLLAPSE
@@ -35,6 +37,12 @@ class App:
         self.root.title("Tankobon")
         self.root.resizable(True, True)
         self.config = load_config()
+        self._workflow_load_error = None
+        try:
+            self.workflows = load_workflows()
+        except WorkflowStoreError as error:
+            self.workflows = []
+            self._workflow_load_error = str(error)
         self.current_doc_format = normalize_document_format(self.config.get("default_doc_format"))
         self.current_folder_format = normalize_folder_format(self.config.get("zip_compression"))
         self.config["zip_compression"] = self.current_folder_format
@@ -84,6 +92,11 @@ class App:
         warning = take_config_warning()
         if warning:
             print(warning)
+        if self._workflow_load_error:
+            print(
+                "  ⚠ Saved workflows could not be loaded and were left untouched: "
+                f"{self._workflow_load_error}"
+            )
         try:
             recover_stale_runs(self.config)       # results left behind by a crash or force-quit
         except Exception:
@@ -868,6 +881,13 @@ class App:
             for tool_id, label in items:
                 self._make_tool_accordion(self._btn_frame, tool_id, label)
 
+        tk.Label(self._btn_frame, text="Workflow",
+                 font=self._uf(bold=True), bg=t["bg"], fg=t["fg"]
+                 ).pack(anchor='w', pady=(8, 2))
+        self._make_button(self._btn_frame, "+ Create Workflow", self._edit_workflow)
+        for workflow in self.workflows:
+            self._make_workflow_row(self._btn_frame, workflow)
+
         tk.Label(self._btn_frame, text="Input",
                  font=self._uf(bold=True), bg=t["bg"], fg=t["fg"]
                  ).pack(anchor='w', pady=(8, 2))
@@ -910,6 +930,310 @@ class App:
             self._show_tooltip(info, tooltip)
 
         return lbl
+
+    def _make_workflow_row(self, parent, workflow):
+        t = self._theme()
+        row = tk.Frame(parent, bg=t["bg"])
+        row.pack(fill="x", pady=1)
+        name = workflow["name"]
+        label = tk.Label(row, text=name, bg=t["bg"], fg=t["fg"],
+                         font=self._uf(), width=16, anchor="w", cursor="hand2")
+        label.pack(side="left", padx=1, pady=1)
+        label.bind("<Button-1>", lambda _event, item=workflow: self._run_workflow(item))
+        label.bind("<Enter>", lambda _event, widget=label: widget.configure(bg=self._theme()["hover"]))
+        label.bind("<Leave>", lambda _event, widget=label: widget.configure(bg=self._theme()["bg"]))
+        self._btn_labels[f"tool:workflow:{workflow['id']}"] = label
+        if self.config.get("show_tooltips", True) and len(name) > 16:
+            self._show_tooltip(label, name)
+
+        edit = tk.Label(row, text="Edit", bg=t["bg"], fg=t["hint_fg"],
+                        font=self._uf(-1), cursor="hand2")
+        edit.pack(side="left", padx=(2, 0))
+        edit.bind("<Button-1>", lambda _event, item=workflow: self._edit_workflow(item))
+        edit.bind("<Enter>", lambda _event, widget=edit: widget.configure(bg=self._theme()["hover"]))
+        edit.bind("<Leave>", lambda _event, widget=edit: widget.configure(bg=self._theme()["bg"]))
+        if self.config.get("show_tooltips", True):
+            self._show_tooltip(edit, "Edit this saved workflow")
+
+        remove = tk.Label(row, text="×", bg=t["bg"], fg=t["hint_fg"],
+                          font=self._uf(), cursor="hand2", padx=4)
+        remove.pack(side="left")
+        remove.bind("<Button-1>", lambda _event, item=workflow: self._delete_workflow(item))
+        remove.bind("<Enter>", lambda _event, widget=remove: widget.configure(bg=self._theme()["hover"]))
+        remove.bind("<Leave>", lambda _event, widget=remove: widget.configure(bg=self._theme()["bg"]))
+        if self.config.get("show_tooltips", True):
+            self._show_tooltip(remove, "Remove this saved workflow")
+
+    def _run_workflow(self, workflow):
+        """Dispatch a snapshot so editing the saved definition cannot alter a running job."""
+        snapshot = {
+            "id": workflow["id"],
+            "name": workflow["name"],
+            "steps": [dict(step) for step in workflow["steps"]],
+        }
+        config = self._production_config()
+        self._run(
+            lambda item=snapshot: run_workflow(
+                config, item, self.cancel_event
+            ),
+            job_name=snapshot["name"],
+            job_id=f"workflow:{snapshot['id']}",
+        )
+
+    def _persist_workflows(self, workflows):
+        """Save and reload workflows before refreshing the visible toolbar."""
+        if self._workflow_load_error:
+            messagebox.showerror(
+                "Workflows could not be changed",
+                "The saved workflow file could not be read, so it was left untouched. "
+                f"Resolve the file issue before saving changes.\n\n{self._workflow_load_error}",
+                parent=self.root,
+            )
+            return False
+        try:
+            save_workflows(workflows)
+            self.workflows = load_workflows()
+        except (WorkflowStoreError, OSError) as error:
+            messagebox.showerror(
+                "Could not save workflows",
+                str(error),
+                parent=self.root,
+            )
+            return False
+        self._rebuild_buttons()
+        return True
+
+    def _delete_workflow(self, workflow):
+        confirmed = messagebox.askyesno(
+            "Remove Workflow",
+            f"Remove the saved workflow '{workflow['name']}'?\n\n"
+            "Its existing Output folder will be kept.",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+        updated = [item for item in self.workflows if item["id"] != workflow["id"]]
+        self._persist_workflows(updated)
+
+    def _edit_workflow(self, workflow=None):
+        """Open the ordered-step editor for a new or saved workflow."""
+        if workflow is None:
+            working = new_workflow()
+            title = "Create Workflow"
+        else:
+            working = {
+                "id": workflow["id"],
+                "name": workflow["name"],
+                "steps": [dict(step) for step in workflow["steps"]],
+            }
+            title = "Edit Workflow"
+
+        tool_ids = [
+            tool_id for tool_id, entry in self.TOOL_REGISTRY.items()
+            if callable(entry.get("handler"))
+        ]
+        if not tool_ids:
+            print("  No tools are available to add to a workflow.")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.configure(bg=self._theme()["bg"])
+        dialog.resizable(True, True)
+        dialog.minsize(460, 390)
+        body = tk.Frame(dialog, bg=self._theme()["bg"], padx=14, pady=12)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+
+        t = self._theme()
+        tk.Label(body, text="Name", bg=t["bg"], fg=t["fg"], font=self._uf()).grid(
+            row=0, column=0, sticky="w", padx=(0, 10), pady=(0, 8)
+        )
+        name_var = tk.StringVar(dialog, value=working["name"])
+        name_entry = tk.Entry(body, textvariable=name_var, font=self._uf(), width=36)
+        name_entry.grid(row=0, column=1, sticky="ew", pady=(0, 8))
+
+        tk.Label(body, text="Tool", bg=t["bg"], fg=t["fg"], font=self._uf()).grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=4
+        )
+        tool_labels = {tool_id: self._tool_label(tool_id) for tool_id in tool_ids}
+        tool_ids_by_label = {label: tool_id for tool_id, label in tool_labels.items()}
+        tool_var = tk.StringVar(dialog, value=tool_labels[tool_ids[0]])
+        option_var = tk.StringVar(dialog)
+        option_values = {}
+        option_menu = tk.OptionMenu(body, option_var, "No option")
+        option_menu.configure(anchor="w", font=self._uf(), width=30,
+                              bg=t["btn_bg"], fg=t["btn_fg"], activebackground=t["hover"])
+        option_menu["menu"].configure(bg=t["btn_bg"], fg=t["btn_fg"])
+
+        def set_option_choices(tool_id, selected=None):
+            entry = self.TOOL_REGISTRY[tool_id]
+            options = entry.get("options", []) if entry.get("config_key") else []
+            menu = option_menu["menu"]
+            menu.delete(0, "end")
+            option_values.clear()
+            if options:
+                choices = [("Use tool preference", None)] + [
+                    (self.OPTION_LABELS.get(value, value), value) for value in options
+                ]
+                option_menu.configure(state="normal")
+            else:
+                choices = [("No option", None)]
+                option_menu.configure(state="disabled")
+            for label, value in choices:
+                option_values[label] = value
+                menu.add_command(label=label, command=lambda text=label: option_var.set(text))
+            selected_label = next(
+                (label for label, value in choices if value == selected), choices[0][0]
+            )
+            option_var.set(selected_label)
+
+        def select_tool(tool_label):
+            tool_id = tool_ids_by_label[tool_label]
+            set_option_choices(tool_id)
+
+        tool_menu = tk.OptionMenu(
+            body, tool_var, *(tool_labels[tool_id] for tool_id in tool_ids), command=select_tool
+        )
+        tool_menu.configure(anchor="w", font=self._uf(), width=30,
+                            bg=t["btn_bg"], fg=t["btn_fg"], activebackground=t["hover"])
+        tool_menu["menu"].configure(bg=t["btn_bg"], fg=t["btn_fg"])
+        tool_menu.grid(row=1, column=1, sticky="ew", pady=4)
+
+        tk.Label(body, text="Option", bg=t["bg"], fg=t["fg"], font=self._uf()).grid(
+            row=2, column=0, sticky="w", padx=(0, 10), pady=4
+        )
+        option_menu.grid(row=2, column=1, sticky="ew", pady=4)
+        set_option_choices(tool_ids[0])
+
+        tk.Label(
+            body,
+            text="Use tool preference leaves the tool's normal setting or prompt in effect.",
+            bg=t["bg"], fg=t["hint_fg"], font=self._uf(-1), anchor="w",
+        ).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 8))
+
+        steps = [dict(step) for step in working["steps"]]
+        step_list = tk.Listbox(
+            body, height=8, exportselection=False, selectmode="browse",
+            font=self._uf(), bg=t["entry_bg"], fg=t["entry_fg"],
+            selectbackground=t["hover"], selectforeground=t["fg"],
+        )
+        step_list.grid(row=4, column=0, columnspan=2, sticky="nsew")
+        body.rowconfigure(4, weight=1)
+
+        def step_text(index, step):
+            tool_name = self._tool_label(step["tool_id"])
+            option = step.get("option")
+            if option is None:
+                option_name = "Use tool preference" if self.TOOL_REGISTRY[step["tool_id"]].get("options") else "No option"
+            else:
+                option_name = self.OPTION_LABELS.get(option, option)
+            return f"{index + 1}. {tool_name} — {option_name}"
+
+        def load_step_controls(index):
+            if not 0 <= index < len(steps):
+                return
+            step = steps[index]
+            tool_var.set(tool_labels[step["tool_id"]])
+            set_option_choices(step["tool_id"], step.get("option"))
+
+        def refresh_steps(select_index=None):
+            step_list.delete(0, "end")
+            for index, step in enumerate(steps):
+                step_list.insert("end", step_text(index, step))
+            if select_index is not None and 0 <= select_index < len(steps):
+                step_list.selection_set(select_index)
+                step_list.activate(select_index)
+                load_step_controls(select_index)
+
+        def selected_index():
+            selected = step_list.curselection()
+            return selected[0] if selected else None
+
+        def selected_step_changed(_event=None):
+            index = selected_index()
+            if index is not None:
+                load_step_controls(index)
+
+        step_list.bind("<<ListboxSelect>>", selected_step_changed)
+
+        def add_step():
+            tool_id = tool_ids_by_label[tool_var.get()]
+            option = option_values.get(option_var.get())
+            steps.append({"tool_id": tool_id, "option": option})
+            refresh_steps(len(steps) - 1)
+
+        def update_step():
+            index = selected_index()
+            if index is None:
+                return
+            steps[index] = {
+                "tool_id": tool_ids_by_label[tool_var.get()],
+                "option": option_values.get(option_var.get()),
+            }
+            refresh_steps(index)
+
+        def remove_step():
+            index = selected_index()
+            if index is None:
+                return
+            steps.pop(index)
+            refresh_steps(min(index, len(steps) - 1) if steps else None)
+
+        def move_step(delta):
+            index = selected_index()
+            destination = index + delta if index is not None else None
+            if destination is None or not 0 <= destination < len(steps):
+                return
+            steps[index], steps[destination] = steps[destination], steps[index]
+            refresh_steps(destination)
+
+        controls = tk.Frame(body, bg=t["bg"])
+        controls.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        for label, command in (
+            ("Add step", add_step),
+            ("Update selected", update_step),
+            ("Remove", remove_step),
+            ("Move up", lambda: move_step(-1)),
+            ("Move down", lambda: move_step(1)),
+        ):
+            tk.Button(controls, text=label, command=command, font=self._uf(-1)).pack(
+                side="left", padx=(0, 5)
+            )
+
+        refresh_steps()
+        footer = tk.Frame(body, bg=t["bg"])
+        footer.grid(row=6, column=0, columnspan=2, sticky="e", pady=(12, 0))
+
+        def save_definition():
+            definition = {
+                "id": working["id"],
+                "name": name_var.get().strip(),
+                "steps": [dict(step) for step in steps],
+            }
+            updated = [dict(item, steps=[dict(step) for step in item["steps"]])
+                       for item in self.workflows]
+            existing_index = next(
+                (index for index, item in enumerate(updated) if item["id"] == definition["id"]),
+                None,
+            )
+            if existing_index is None:
+                updated.append(definition)
+            else:
+                updated[existing_index] = definition
+            if self._persist_workflows(updated):
+                dialog.destroy()
+
+        tk.Button(footer, text="Cancel", command=dialog.destroy, font=self._uf()).pack(
+            side="right", padx=(6, 0)
+        )
+        tk.Button(footer, text="Save Workflow", command=save_definition, font=self._uf()).pack(
+            side="right"
+        )
+        self._apply_to_widget(body, t)
+        name_entry.focus_set()
+        dialog.grab_set()
 
     def _make_tool_accordion(self, parent, tool_id, label):
         t = self._theme()
@@ -1128,7 +1452,15 @@ class App:
         else:
             names = []
             for name, count in jobs.items():
-                display_name = self._tool_label(name) if name in self.TOOL_REGISTRY else name.replace("_", " ").title()
+                if name.startswith("workflow:"):
+                    workflow_id = name.split(":", 1)[1]
+                    workflow = next(
+                        (item for item in self.workflows if item["id"] == workflow_id),
+                        None,
+                    )
+                    display_name = workflow["name"] if workflow else "Workflow"
+                else:
+                    display_name = self._tool_label(name) if name in self.TOOL_REGISTRY else name.replace("_", " ").title()
                 names.append(f"{display_name}" if count == 1 else f"{display_name} ×{count}")
             self._status_lbl.configure(text="● " + "  |  ".join(names))
 
