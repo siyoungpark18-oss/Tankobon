@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 from Themes import THEMES
-from ToolNames import DOCUMENT_FORMATS, FOLDER_FORMATS
+from ToolNames import DOCUMENT_FORMATS, FOLDER_FORMATS, IMAGE_CONVERTER_FORMATS
 from ManagerConfig import save_config
 
 
@@ -30,7 +30,8 @@ PREF_TIPS = {
     "min_free_gb":                "The Minimum Storage Requirement to begin an Operation in GB.\n The program will usually warn you of low storage before this.",
     "default_doc_format":         "The format selected when Tankobon starts. The PDF/EPUB selector in the main interface changes the current session only; use this setting to change the startup default. An EPUB is one multi-page book. In Individual mode, each folder becomes one book with images as its pages; Combine makes one book from all folders. EPUB output from a PDF renders its pages as images, which can take longer and need extra space.",
     "salvage_failed_document_pages": "By default, a PDF or EPUB that cannot be read completely contributes no pages to the combined book. Turn this on to keep readable pages from that document and skip only pages that fail.",
-    "epub_direction":             "Reading direction of the EPUBs Tankobon writes. RTL (right to left) is how manga is read.\n It only changes the page-turn direction; the pages stay in the order they were processed.",
+    "epub_direction":             "Reading direction for EPUB page turns and split spreads. RTL puts the right half first; LTR puts the left half first.",
+    "split_wide_pages":           "Automatically splits images wider than they are tall into two pages when making PDFs or EPUBs. Turn this off to keep intentional landscape images whole.",
     "default_folders_to_pdf_mode":"The 'Combine' option makes one PDF or EPUB book from all folders. The 'Individual' option makes one book per folder. In an EPUB, each image is a page in that book.",
     "default_sort":               "Controls the Order files are processed in.\n Natural mode reads numbers in names as numbers.\n So 'chapter 2' comes before 'chapter 10' (a plain alphabetical sort would put 10 first).\n\n 'None' simply uses your filesystem order.",
     "default_folder_renamer_mode":"The mode the Folder Renamer uses by default.\n\n The 'Extract Number' mode names the folder after any numbers in its name to make it easier to sort.\n This mode doesn't work very well if there are multiple unrelated numbers in the file name",
@@ -83,23 +84,65 @@ def _safe_int(val, default, lo=None, hi=None):
 
 
 class FlatDropdown(tk.Frame):
-    def __init__(self, parent, variable, options, t, win, **kwargs):
-        super().__init__(parent, bg=t["btn_bg"], relief='flat', bd=0, **kwargs)
+    def __init__(
+        self, parent, variable, options, t, win, command=None, width=16,
+        appearance="button", **kwargs,
+    ):
+        self._appearance = appearance
+        frame_style = {"bg": t["btn_bg"], "relief": "flat", "bd": 0}
+        if appearance == "entry":
+            frame_style.update({
+                "bg": t["entry_bg"], "highlightthickness": 1,
+                "highlightbackground": t["entry_bg"],
+                "highlightcolor": t["entry_bg"],
+            })
+        super().__init__(parent, **frame_style, **kwargs)
         self._var = variable
-        self._opts = options
+        self._opts = list(options)
         self._t = t
         self._win = win
+        self._command = command
 
-        self._btn = tk.Label(self, textvariable=variable, bg=t["btn_bg"], fg=t["fg"],
-                             font=('', 10), padx=6, pady=2, cursor="hand2",
-                             relief='flat', width=16, anchor='w')
-        self._btn.pack(side='left')
+        if appearance == "entry":
+            self._btn = tk.Entry(
+                self, textvariable=variable, bg=t["entry_bg"], fg=t["entry_fg"],
+                readonlybackground=t["entry_bg"], insertbackground=t["entry_fg"],
+                font=('', 10), relief="flat", bd=0, highlightthickness=0,
+                cursor="hand2", width=width, state="readonly",
+            )
+            self._btn.pack(side="left", fill="x", expand=True, padx=(5, 0), pady=1)
+            arrow_bg = t["entry_bg"]
+            arrow_fg = t["hint_fg"]
+        else:
+            self._btn = tk.Label(
+                self, textvariable=variable, bg=t["btn_bg"], fg=t["fg"],
+                font=('', 10), padx=6, pady=2, cursor="hand2",
+                relief='flat', bd=0, width=width, anchor='w',
+            )
+            self._btn.pack(side='left')
+            arrow_bg = t["btn_bg"]
+            arrow_fg = t["hint_fg"]
         self._btn.bind("<Button-1>", self._show_menu)
 
-        arr = tk.Label(self, text="▾", bg=t["btn_bg"], fg=t["hint_fg"],
-                       font=('', 10), cursor="hand2", padx=2)
+        arr = tk.Label(self, text="▾", bg=arrow_bg, fg=arrow_fg,
+                       font=('', 10), cursor="hand2", padx=2, relief='flat', bd=0)
         arr.pack(side='left')
         arr.bind("<Button-1>", self._show_menu)
+        if appearance != "entry":
+            for widget in (self._btn, arr):
+                widget.bind("<Enter>", lambda _event, item=widget: item.configure(bg=self._t["hover"]))
+                widget.bind("<Leave>", lambda _event, item=widget: item.configure(bg=self._t["btn_bg"]))
+
+    def set_options(self, options):
+        """Replace the menu choices and keep the selected value valid."""
+        self._opts = list(options)
+        if self._var.get() not in self._opts:
+            self._var.set(self._opts[0] if self._opts else "")
+
+    def _select(self, option):
+        self._var.set(option)
+        if self._command is not None:
+            self._command(option)
 
     def _show_menu(self, e=None):
         t = self._t
@@ -107,7 +150,7 @@ class FlatDropdown(tk.Frame):
                        activebackground=t["hover"], activeforeground=t["fg"],
                        relief='flat', bd=0, font=('', 10))
         for opt in self._opts:
-            menu.add_command(label=opt, command=lambda o=opt: self._var.set(o))
+            menu.add_command(label=opt, command=lambda o=opt: self._select(o))
         menu.tk_popup(self._btn.winfo_rootx(), self._btn.winfo_rooty() + self._btn.winfo_height())
 
 
@@ -172,13 +215,14 @@ def _build_primary_pages(app, t, win, pages, Label, info_btn, check_btn):
         ("default_doc_format",          "Default File Production Format", "combo", list(DOCUMENT_FORMATS)),
         ("salvage_failed_document_pages", "Document Combiner: Salvage Readable Pages", "check", None),
         ("zip_compression",             "Default Folder Production Format", "combo", list(FOLDER_FORMATS)),
-        ("epub_direction",              "EPUB Reading Direction",         "combo", ["rtl", "ltr"]),
+        ("epub_direction",              "Book Reading Direction",         "combo", ["rtl", "ltr"]),
+        ("split_wide_pages",            "Split Wide Images into Two Pages", "check", None),
         ("default_folders_to_pdf_mode", "Folders to File: Default Mode",  "combo", ["ask", "combine", "individual"]),
         ("default_images_to_pdf_mode", "Images to File: Default Mode", "combo", ["ask", "combine", "reorder & combine"]),
         ("default_sort",                "Default Sort Mode",              "combo", ["natural", "none"]),
         ("default_folder_renamer_mode", "Folder Renamer: Default Mode",  "combo", ["ask", "prefix", "suffix", "replace", "extract number"]),
         ("default_file_renamer_mode",   "File Renamer: Default Mode",    "combo", ["ask", "prefix", "suffix", "replace", "sequence"]),
-        ("default_img_fmt",             "Image Converter: Default Format","combo", ["ask", "jpg", "png", "webp", "bmp", "tiff"]),
+        ("default_img_fmt",             "Image Converter: Default Format","combo", ["ask", *IMAGE_CONVERTER_FORMATS]),
         ("default_pdf_to_images_fmt",   "PDF to Images: Default Format", "combo", ["ask", "jpg", "png"]),
         ("default_dedupe_mode",         "Find Duplicates: Default Mode", "combo", ["ask", "keep one copy", "delete all"]),
         ("default_dedupe_hash",         "Find Duplicates: Hash Method",  "combo", ["exact", "perceptual"]),
@@ -208,7 +252,7 @@ def _build_primary_pages(app, t, win, pages, Label, info_btn, check_btn):
                 row=row, column=0, sticky='w', pady=4, padx=(0, 16))
             info_btn(page, row, key, PREF_TIPS)
             if typ == "check":
-                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats", "zip_extract_input", "keep_documents_unarchived", "confirm_clear_output", "ask_run_name") else False
+                default = True if key in ("guide_empty_input", "show_tooltips", "show_folder_stats", "zip_extract_input", "keep_documents_unarchived", "confirm_clear_output", "ask_run_name", "split_wide_pages") else False
                 v = tk.BooleanVar(value=bool(app.config.get(key, default)))
                 check_btn(page, v).grid(row=row, column=1, sticky='w')
             elif typ == "entry":
@@ -221,7 +265,10 @@ def _build_primary_pages(app, t, win, pages, Label, info_btn, check_btn):
             else:
                 raw_val = str(app.config.get(key, opts[0]))
                 if raw_val not in opts:
-                    opts = list(opts) + [raw_val]      # keep the real value instead of replacing it
+                    if key == "default_img_fmt":
+                        raw_val = "jpg"                # migrate retired BMP/TIFF output preferences
+                    else:
+                        opts = list(opts) + [raw_val]  # keep the real value instead of replacing it
                 v = tk.StringVar(value=raw_val)
                 FlatDropdown(page, v, opts, t, win).grid(row=row, column=1, sticky='w')
             vars_[key] = v
@@ -513,7 +560,7 @@ def show_preferences(app):
     last_raw = {key: var.get() for key, var in vars_.items()}
 
     def _normalise(key, raw):
-        if key in ("auto_clear_input", "confirm_clear_input", "confirm_clear_output", "replace_output", "sort_output", "ask_run_name",
+        if key in ("auto_clear_input", "confirm_clear_input", "confirm_clear_output", "replace_output", "sort_output", "ask_run_name", "split_wide_pages",
                    "guide_empty_input", "show_tooltips", "allow_concurrent_jobs", "log_default_expanded",
                    "show_timestamps", "open_output_recent", "log_blank_lines", "show_folder_stats",
                    "zip_extract_input", "keep_documents_unarchived"):
