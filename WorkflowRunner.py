@@ -113,7 +113,12 @@ def run_workflow(config, workflow, cancel=None, registry=None):
     produced something and all final files have reached the outer output stage.
     """
     registry = registry if registry is not None else TOOL_REGISTRY
-    workflow = validate_workflows([workflow], registry=registry)[0]
+    workflow = validate_workflows(
+        [workflow],
+        registry=registry,
+        default_document_format=config.get("default_doc_format"),
+        default_folder_format=config.get("zip_compression"),
+    )[0]
     source_input = get_input(config)
     if not source_input.is_dir():
         print(f"  Workflow Input folder was not found: {source_input}")
@@ -122,7 +127,10 @@ def run_workflow(config, workflow, cancel=None, registry=None):
         print("  Workflow Input is empty; no output was changed.")
         return False
 
-    publish_config = dict(config)
+    workflow_config = dict(config)
+    workflow_config["default_doc_format"] = workflow["document_format"]
+    workflow_config["zip_compression"] = workflow["folder_format"]
+    publish_config = dict(workflow_config)
     publish_config["auto_clear_input"] = False
     publish_stage = get_output(publish_config, "Workflows", workflow["name"])
     workspace = publish_stage / ".workflow_work"
@@ -137,12 +145,12 @@ def run_workflow(config, workflow, cancel=None, registry=None):
             step_tool_id = step["tool_id"]
             if cancel is not None and cancel.is_set():
                 raise _WorkflowCancelled()
-            throttle_if_needed(config, cancel)
+            throttle_if_needed(workflow_config, cancel)
             registry_entry = registry[step_tool_id]
             handler = registry_entry["handler"]
             output_root = workspace / f"step_{step_index:03d}_results"
             step_config = _step_config(
-                config, step, registry_entry, current_input_root, output_root
+                workflow_config, step, registry_entry, current_input_root, output_root
             )
             label = step_tool_id.replace("_", " ").title()
             print(f"  Workflow step {step_index}/{len(workflow['steps'])}: {label}")
