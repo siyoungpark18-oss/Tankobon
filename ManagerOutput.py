@@ -345,12 +345,17 @@ def _publish_named(stage, record):
             _remove_path(backup)
 
 
-def settle_runs(config, cancelled=False):
+def settle_runs(config, cancelled=False, exclude_paths=()):
     """Keep failed named stages recoverable; discard explicitly cancelled named runs."""
     me = threading.get_ident()
+    excluded = {
+        os.path.normcase(os.path.abspath(os.fspath(path)))
+        for path in exclude_paths
+    }
     with _RUNS_LOCK:
         open_runs = [(path, record) for path, record in _RUNS.items()
-                     if record["thread"] == me and not record["done"]]
+                     if record["thread"] == me and not record["done"]
+                     and os.path.normcase(os.path.abspath(path)) not in excluded]
     for path, record in open_runs:
         stage = Path(path)
         if record.get("preserve"):
@@ -493,7 +498,7 @@ def _has_staged_results(stage, config, record):
     # with only empty child folders. Other tools create empty directories as setup
     # before writing files, so those directories alone are not results.
     operation = str(record.get("operation", "")).casefold()
-    if _archive_mode(config) is None and "renamer" in operation:
+    if _archive_mode(config) is None and ("renamer" in operation or operation == "workflows"):
         for item in stage.iterdir():
             if item.is_dir() and not item.is_symlink() and next(item.iterdir(), None) is not None:
                 return True
