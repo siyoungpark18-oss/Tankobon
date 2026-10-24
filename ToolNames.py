@@ -52,6 +52,7 @@ def tool_label(tool_id, doc_format=DEFAULT_DOCUMENT_FORMAT, folder_format_value=
         "folders_to_file": f"Folders to {doc}", "images_to_file": f"Images to {doc}",
         "document_combiner": f"{doc} Combiner", "document_splitter": f"{doc} Splitter",
         "document_to_images": f"{doc} to Images",
+        "epub_metadata": "EPUB Metadata",
     }
     if tool_id in doc_labels:
         return doc_labels[tool_id]
