@@ -42,6 +42,14 @@ jobs:
 
       - name: Build and package
         run: python ${{ matrix.script }}
+      - name: Install QPDF for macOS dependency build
+        if: matrix.platform == 'macOS'
+        run: |
+          brew install qpdf
+          qpdf_prefix="$(brew --prefix qpdf)"
+          echo "CXXFLAGS=-I${qpdf_prefix}/include ${CXXFLAGS:-}" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L${qpdf_prefix}/lib ${LDFLAGS:-}" >> "$GITHUB_ENV"
+
       - name: Build macOS package
         if: matrix.platform == 'macOS'
         run: python build.py
