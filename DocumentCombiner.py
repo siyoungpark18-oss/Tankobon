@@ -5,6 +5,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from PIL import Image
 from pypdf import PdfReader, PdfWriter
 
 from Archives import extract_archives
@@ -29,6 +30,14 @@ from Util import (
     resolve_sort,
     throttle_if_needed,
 )
+
+
+def _partial_failure_message(kept_pages, total_pages, page_errors):
+    details = "; ".join(page_errors[:3])
+    if len(page_errors) > 3:
+        details += f"; and {len(page_errors) - 3} more page error(s)"
+    return (f"partially read: kept {kept_pages} of {total_pages} page(s); "
+            f"{len(page_errors)} page error(s): {details}")
 
 
 def document_combiner(config, cancel=None):
@@ -88,6 +97,7 @@ def document_combiner(config, cancel=None):
     total_pages = 0
     failed = []
     page_rows = []
+    salvage_pages = bool(config.get("salvage_failed_document_pages", False))
 
     if as_epub:
         pages, direction = [], None
@@ -98,28 +108,78 @@ def document_combiner(config, cancel=None):
                     print("")
                     return
                 throttle_if_needed(config, cancel)
+                document_pages = []
+                page_errors = []
+                expected_pages = 0
+                document_direction = None
                 try:
                     if doc.suffix.lower() == ".epub":
                         with zipfile.ZipFile(doc) as zf:
-                            members, doc_direction, _title = epub_pages(zf)
+                            members, document_direction, _title = epub_pages(zf)
+                            expected_pages = len(members)
+                            if not members:
+                                raise ValueError("no page images found (only image-based EPUBs are supported)")
                             for member_index, member in enumerate(members):
-                                suffix = Path(member).suffix.lower() or ".img"
-                                image_path = Path(page_dir) / f"doc{doc_index:04d}_{member_index:06d}{suffix}"
-                                image_path.write_bytes(zf.read(member))
-                                pages.append(PathImage(image_path))
-                        if not members:
-                            raise ValueError("no page images found (only image-based EPUBs are supported)")
-                        direction = direction or doc_direction
-                        n_pages = len(members)
+                                try:
+                                    data = zf.read(member)
+                                    with Image.open(io.BytesIO(data)) as image:
+                                        image.load()
+                                    suffix = Path(member).suffix.lower() or ".img"
+                                    image_path = Path(page_dir) / f"doc{doc_index:04d}_{member_index:06d}{suffix}"
+                                    image_path.write_bytes(data)
+                                    document_pages.append(PathImage(image_path))
+                                except Exception as error:
+                                    if not salvage_pages or is_no_space(error):
+                                        raise
+                                    page_errors.append(f"page {member_index + 1}: {error}")
                     else:
                         reader = PdfReader(str(doc))
-                        n_pages = len(reader.pages)
-                        pages.extend(render_pdf_pages_as_images(
-                            doc, range(1, n_pages + 1), page_dir, f"doc{doc_index:04d}", cancel))
-                    total_pages += n_pages
-                    page_rows.append(f"    {rel(doc, src)}  —  {n_pages} page(s)  (running total: {total_pages})")
+                        expected_pages = len(reader.pages)
+                        if salvage_pages:
+                            for page_number in range(1, expected_pages + 1):
+                                if cancel and cancel.is_set():
+                                    break
+                                try:
+                                    rendered = render_pdf_pages_as_images(
+                                        doc, [page_number], page_dir,
+                                        f"doc{doc_index:04d}_page{page_number:06d}", cancel)
+                                    if not rendered:
+                                        if cancel and cancel.is_set():
+                                            break
+                                        raise RuntimeError(f"could not render PDF page {page_number}")
+                                    document_pages.extend(rendered)
+                                except Exception as error:
+                                    if is_no_space(error):
+                                        raise
+                                    page_errors.append(f"page {page_number}: {error}")
+                        else:
+                            document_pages = render_pdf_pages_as_images(
+                                doc, range(1, expected_pages + 1), page_dir, f"doc{doc_index:04d}", cancel)
+
+                    if cancel and cancel.is_set():
+                        print(f"  Cancelled. ({total_pages} pages combined and staged so far)")
+                        print("")
+                        return
+                    if not document_pages:
+                        if page_errors:
+                            raise ValueError(_partial_failure_message(0, expected_pages, page_errors))
+                        raise ValueError("no readable pages found")
+                    if not salvage_pages and len(document_pages) != expected_pages:
+                        raise ValueError(
+                            f"read {len(document_pages)} of {expected_pages} page(s)")
+                    if page_errors:
+                        failed.append((doc, _partial_failure_message(
+                            len(document_pages), expected_pages, page_errors)))
+                    pages.extend(document_pages)
+                    total_pages += len(document_pages)
+                    direction = direction or document_direction
+                    page_count = len(document_pages)
+                    detail = (f"partial; kept {page_count} of {expected_pages} page(s)"
+                              if page_errors else f"{page_count} page(s)")
+                    page_rows.append(
+                        f"    {rel(doc, src)}  —  {detail}  (running total: {total_pages})")
                 except Exception as e:
-                    failed.append((doc, str(e)))
+                    failed.append((doc, f"no pages included: {e}"))
             with Section(config, f"  Pages per document ({len(page_rows)})") as section:
                 for row in page_rows:
                     section.add(row)
@@ -145,25 +205,73 @@ def document_combiner(config, cancel=None):
                 print("")
                 return
             throttle_if_needed(config, cancel)
+            document_writer = PdfWriter()
+            page_errors = []
+            expected_pages = 0
             try:
                 if pdf_path.suffix.lower() == ".epub":
                     with zipfile.ZipFile(pdf_path) as zf:
                         members, _direction, _title = epub_pages(zf)
                         if not members:
                             raise ValueError("no page images found (only image-based EPUBs are supported)")
-                        for m in members:
-                            for page in PdfReader(io.BytesIO(image_to_pdf_bytes(zf.read(m)))).pages:
-                                writer.add_page(page)
-                    n_pages = len(members)
+                        expected_pages = len(members)
+                        for page_index, member in enumerate(members):
+                            try:
+                                converted = PdfReader(io.BytesIO(image_to_pdf_bytes(zf.read(member))))
+                                if not converted.pages:
+                                    raise ValueError("image did not produce a PDF page")
+                                for page in converted.pages:
+                                    document_writer.add_page(page)
+                            except Exception as error:
+                                if not salvage_pages or is_no_space(error):
+                                    raise
+                                page_errors.append(f"page {page_index + 1}: {error}")
                 else:
                     reader = PdfReader(str(pdf_path))
-                    for page in reader.pages:
+                    expected_pages = len(reader.pages)
+                    for page_index in range(expected_pages):
+                        try:
+                            document_writer.add_page(reader.pages[page_index])
+                        except Exception as error:
+                            if not salvage_pages or is_no_space(error):
+                                raise
+                            page_errors.append(f"page {page_index + 1}: {error}")
+
+                if cancel and cancel.is_set():
+                    print(f"  Cancelled. ({total_pages} pages combined and staged so far)")
+                    print("")
+                    return
+                if not document_writer.pages:
+                    if page_errors:
+                        raise ValueError(_partial_failure_message(0, expected_pages, page_errors))
+                    raise ValueError("no readable pages found")
+
+                start_page_count = len(writer.pages)
+                for page_index, page in enumerate(document_writer.pages, 1):
+                    try:
                         writer.add_page(page)
-                    n_pages = len(reader.pages)
-                total_pages += n_pages
-                page_rows.append(f"    {rel(pdf_path, src)}  —  {n_pages} page(s)  (running total: {total_pages})")
+                    except Exception as error:
+                        if salvage_pages and not is_no_space(error):
+                            page_errors.append(f"page {page_index}: {error}")
+                            continue
+                        while len(writer.pages) > start_page_count:
+                            writer.remove_page(-1)
+                        raise
+
+                added_pages = len(writer.pages) - start_page_count
+                if not added_pages:
+                    raise ValueError(_partial_failure_message(
+                        0, expected_pages, page_errors or ["no pages could be added to the output"]))
+                if page_errors:
+                    failed.append((pdf_path, _partial_failure_message(
+                        added_pages, expected_pages, page_errors)))
+                total_pages += added_pages
+                detail = (f"partial; kept {added_pages} of {expected_pages} page(s)"
+                          if page_errors else f"{added_pages} page(s)")
+                page_rows.append(
+                    f"    {rel(pdf_path, src)}  —  {detail}  (running total: {total_pages})")
             except Exception as e:
-                failed.append((pdf_path, str(e)))
+                failed.append((pdf_path, f"no pages included: {e}"))
         if not writer.pages:
             print("  Nothing to combine.")
             print_summary(config, copied=0, failed=failed or None, skipped=skipped or None, label="combined")
